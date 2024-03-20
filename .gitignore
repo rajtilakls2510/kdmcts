@@ -1,0 +1,6 @@
+./actor_network
+./build
+*.so
+*.html
+*.pyd
+*.c

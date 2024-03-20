@@ -223,6 +223,6 @@ def some():
         print("")
 
     free(samples)
-    free(rng)
+    gsl_rng_free(rng)
     free(cov)
     free(mu)

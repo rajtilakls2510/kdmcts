@@ -7,11 +7,24 @@ try:
 except:
     pass
 
+def tanh(a):
+    a = tf.exp(2*a)
+    return (a-1) / (a+1)
+
 def print_hi(name):
     # something.some()
+    model = tf.keras.models.load_model("actor_network")
+    print(model.summary())
+    print(model.get_weights())
 
+    # state = tf.random.uniform(minval=0, maxval=1.0, shape=(4,27))
+    # action = model(state)
+    # print(action)
+    # w, b = model.get_weights()
+    # new_action = tanh(state @ w + b)
+    # print(new_action)
 
-    mujoco_envs.driver("ant")
+    mujoco_envs.driver("ant", *model.get_weights())
 
 if __name__ == '__main__':
     print_hi('PyCharm')

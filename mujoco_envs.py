@@ -7,7 +7,7 @@ from cython.cimports.gsl import CblasRowMajor, CblasNoTrans, CblasTrans, \
     cblas_dgemv, cblas_dscal, cblas_dcopy, cblas_ddot, gsl_rng, gsl_ran_gaussian, \
     gsl_ran_flat, gsl_rng_type, gsl_rng_default, gsl_rng_alloc, gsl_rng_set, gsl_rng_free
 from cython.cimports.libc.math import exp, isfinite
-
+import time
 
 @cython.cfunc
 @cython.nogil
@@ -253,6 +253,26 @@ def ant_step(env: MujocoEnv, action: cython.pointer(cython.double), num_steps: c
     reward: cython.double = xvel + healthy_reward - ctrl_cost
     return reward
 
+@cython.cclass
+class MujocoPyEnv:
+    env_struct: MujocoEnv
+    rng: cython.pointer(gsl_rng)
+
+    def __init__(self, env_name: str, seed: int = 5):
+        self.env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5}}
+        self.env_struct = create_env(self.env_dict[env_name]["env_id"], self.env_dict[env_name]["xml_path"])
+        T: cython.pointer(gsl_rng_type) = gsl_rng_default
+        self.rng = gsl_rng_alloc(T)
+        gsl_rng_set(self.rng, seed)
+
+    def __dealloc__(self):
+        free_env(self.env_struct)
+        gsl_rng_free(self.rng)
+
+    #
+    # def reset(self):
+    #     reset_env(self.env_struct, self.rng)
+
 
 def driver(env_name, weightT, bias):
     env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5}}
@@ -285,23 +305,26 @@ def driver(env_name, weightT, bias):
     gsl_rng_set(rng, 6)
     reset_env(env, rng)
     total_reward: cython.double = 0.0
+    start = time.perf_counter_ns()
     for j in range(1000):
         state: cython.pointer(cython.double) = get_state(env)
-        print(f"{j} State: ")
-        for i in range(env.state_size):
-            print(state[i], end=", ")
-        print("")
+        # print(f"{j} State: ")
+        # for i in range(env.state_size):
+        #     print(state[i], end=", ")
+        # print("")
         action: cython.pointer(cython.double) = policy(params, state, env)
-        print("Action: ")
-        for i in range(env.action_size):
-            print(action[i], end=", ")
-        print("")
+        # print("Action: ")
+        # for i in range(env.action_size):
+        #     print(action[i], end=", ")
+        # print("")
         reward: cython.double = step(env, action, env_dict[env_name]["step_skip"])
         terminated: cython.bint = is_terminated(env)
         total_reward += reward
-        print("Reward: ", reward, "Terminated: ", terminated, "Total Reward: ", total_reward)
+        # print("Reward: ", reward, "Terminated: ", terminated, "Total Reward: ", total_reward)
         free(action)
         free(state)
+    end = time.perf_counter_ns()
+    print(f"Time: {(end - start) / 1e3}")
     free(params.w)
     free(params.b)
     free_env(env)

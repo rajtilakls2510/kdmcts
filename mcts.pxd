@@ -3,11 +3,14 @@ from cython.cimports.openmp import omp_lock_t
 
 cdef struct MKDNode:
     double* state
+    int current_step
     MKDNode* parent
+    double parent_reward
     omp_lock_t access_lock
     bint terminal
     int num_kernels
     int action_dim
+    bint params_initialized
     double* pi  # (num_kernels, )
     double* w   # (num_kernels, )
     double* n   # (num_kernels, )

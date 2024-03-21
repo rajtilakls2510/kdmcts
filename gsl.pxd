@@ -25,7 +25,9 @@ cdef extern from "gsl/gsl_cblas.h" nogil:
     double cblas_dnrm2(const int N, const double *X, const int incX); # = ||x||_2
     void cblas_daxpy(const int N, const double alpha, const double *X,
                  const int incX, double *Y, const int incY); # y = y + alpha * x
-
+    void cblas_dger(const CBLAS_ORDER order, const int M, const int N,
+                const double alpha, const double *X, const int incX,
+                const double *Y, const int incY, double *A, const int lda); # A = A + alpha * x @ y^T
     void cblas_dgemv(const CBLAS_ORDER order, const CBLAS_TRANSPOSE TransA, const int M, const int N,
                  const double alpha, const double *A, const int lda,
                  const double *X, const int incX, const double beta,

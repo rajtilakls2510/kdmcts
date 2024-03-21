@@ -12,13 +12,15 @@ import time
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
-def create_env(env_id: cython.int, path: cython.pointer(cython.char)) -> MujocoEnv:
+def create_env(env_id: cython.int, path: cython.pointer(cython.char), num_steps: cython.int, max_steps: cython.int) -> MujocoEnv:
     err: cython.char[300]
     model: cython.pointer(mjModel) = mj_loadXML(path, cython.NULL, err, 300)
     data: cython.pointer(mjData) = mj_makeData(model)
     env: MujocoEnv = MujocoEnv(env_id=env_id, model=model, data=data, state_size=0, action_size=0)
     env.state_size = get_state_size(env)
     env.action_size = get_action_size(env)
+    env.num_steps = num_steps
+    env.max_steps = max_steps
     return env
 
 
@@ -57,12 +59,13 @@ def get_state(env: MujocoEnv) -> cython.pointer(cython.double):
     return cython.NULL
 
 
-# @cython.cfunc
-# @cython.nogil
-# @cython.exceptval(check=False)
-# def set_state(env: MujocoEnv, state: cython.pointer(cython.double)) -> cython.void:
-#     if env.env_id == 0:
-#         set_ant_state(env, state)
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def set_state(env: MujocoEnv, state: cython.pointer(cython.double)) -> cython.void:
+    # BEWARE: The state is only env.data.qpos+env.data.qvel. Setting a state doesn't modify the external control forces
+    if env.env_id == 0:
+        set_ant_state(env, state)
 
 
 @cython.cfunc
@@ -102,18 +105,18 @@ def perform_steps(env: MujocoEnv, num_steps: cython.int) -> cython.void:
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
-def step(env: MujocoEnv, action: cython.pointer(cython.double), num_steps: cython.int) -> cython.double:
+def step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.double:
     if env.env_id == 0:
-        return ant_step(env, action, num_steps)
+        return ant_step(env, action)
     return 0.0
 
 
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
-def is_terminated(env: MujocoEnv) -> cython.bint:
+def is_terminated(env: MujocoEnv, steps_taken: cython.int) -> cython.bint:
     if env.env_id == 0:
-        return ant_is_terminated(env)
+        return ant_is_terminated(env, steps_taken)
     return True
 
 @cython.cfunc
@@ -172,17 +175,17 @@ def get_ant_state(env: MujocoEnv) -> cython.pointer(cython.double):
         state[i + env.model.nq - 2] = env.data.qvel[i]
     return state
 
-#
-# @cython.cfunc
-# @cython.nogil
-# @cython.exceptval(check=False)
-# def set_ant_state(env: MujocoEnv, state: cython.pointer(cython.double)) -> cython.void:
-#     # Not going to be used most probably
-#     i: cython.Py_ssize_t
-#     for i in range(env.model.nq - 2):
-#         env.data.qpos[i + 2] = state[i]
-#     for i in range(env.model.nv):
-#         env.data.qvel[i] = state[i + env.model.nq - 2]
+
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def set_ant_state(env: MujocoEnv, state: cython.pointer(cython.double)) -> cython.void:
+    # Used only for rollouts when the simulator is reset at a particular state
+    i: cython.Py_ssize_t
+    for i in range(env.model.nq - 2):
+        env.data.qpos[i + 2] = state[i]
+    for i in range(env.model.nv):
+        env.data.qvel[i] = state[i + env.model.nq - 2]
 
 
 @cython.cfunc
@@ -216,39 +219,43 @@ def ant_reset_env(env: MujocoEnv, rng: cython.pointer(gsl_rng)) -> cython.void:
     for i in range(env.model.nv):
         env.data.qvel[i] = 0.1 * gsl_ran_gaussian(rng, 1.0)
 
-
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
-def ant_is_terminated(env: MujocoEnv) -> cython.bint:
+def ant_is_healthy(env: MujocoEnv) -> cython.bint:
     healthy: cython.bint = True
     i: cython.Py_ssize_t
     for i in range(env.model.nq):
         healthy = healthy and isfinite(env.data.qpos[i])
     for i in range(env.model.nv):
         healthy = healthy and isfinite(env.data.qvel[i])
+    return not (0.2 <= env.data.qpos[0] <= 1.0) or not healthy
 
-    return (0.2 <= env.data.qpos[0] <= 1.0) and healthy
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def ant_is_terminated(env: MujocoEnv, steps_taken: cython.int) -> cython.bint:
+    return not ant_is_healthy(env) or (steps_taken * env.num_steps >= env.max_steps)
 
 
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
-def ant_step(env: MujocoEnv, action: cython.pointer(cython.double), num_steps: cython.int) -> cython.double:
+def ant_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.double:
     set_action(env, action)
     body_n: cython.int = 1 # TORSO
     previous_x: cython.double = env.data.xpos[body_n * 3 + 0]
 
-    perform_steps(env, num_steps)
+    perform_steps(env, env.num_steps)
 
     new_x: cython.double = env.data.xpos[body_n * 3 + 0]
-    xvel: cython.double = (new_x - previous_x) / (env.model.opt.timestep * num_steps)
+    xvel: cython.double = (new_x - previous_x) / (env.model.opt.timestep * env.num_steps)
 
     ctrl_cost_weight: cython.double = 0.5
     ctrl_cost: cython.double = ctrl_cost_weight * cblas_ddot(env.action_size, action, 1, action, 1) # np.sum(action ** 2)
 
     healthy_reward: cython.double = 1.0
-    healthy_reward = healthy_reward * ant_is_terminated(env)
+    healthy_reward = healthy_reward * ant_is_healthy(env)
 
     reward: cython.double = xvel + healthy_reward - ctrl_cost
     return reward
@@ -260,7 +267,7 @@ class MujocoPyEnv:
 
     def __init__(self, env_name: str, seed: int = 5):
         self.env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5}}
-        self.env_struct = create_env(self.env_dict[env_name]["env_id"], self.env_dict[env_name]["xml_path"])
+        self.env_struct = create_env(self.env_dict[env_name]["env_id"], self.env_dict[env_name]["xml_path"], self.env_dict[env_name]["step_skip"], self.env_dict[env_name]["max_steps"])
         T: cython.pointer(gsl_rng_type) = gsl_rng_default
         self.rng = gsl_rng_alloc(T)
         gsl_rng_set(self.rng, seed)
@@ -275,8 +282,8 @@ class MujocoPyEnv:
 
 
 def driver(env_name, weightT, bias):
-    env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5}}
-    env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"])
+    env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5, "max_steps": 5000}}
+    env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"], env_dict[env_name]["step_skip"], env_dict[env_name]["max_steps"])
     print(env.env_id, env.state_size, env.action_size)
 
     w: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size*env.state_size, cython.sizeof(cython.double)))
@@ -317,8 +324,8 @@ def driver(env_name, weightT, bias):
         # for i in range(env.action_size):
         #     print(action[i], end=", ")
         # print("")
-        reward: cython.double = step(env, action, env_dict[env_name]["step_skip"])
-        terminated: cython.bint = is_terminated(env)
+        reward: cython.double = step(env, action)
+        terminated: cython.bint = is_terminated(env, j)
         total_reward += reward
         # print("Reward: ", reward, "Terminated: ", terminated, "Total Reward: ", total_reward)
         free(action)

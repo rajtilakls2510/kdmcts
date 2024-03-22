@@ -24,4 +24,4 @@ ext_modules = [
 ]
 
 setup(name="something",
-      ext_modules=cythonize(ext_modules, annotate=False, compiler_directives={"language_level": "3"}, ))
+      ext_modules=cythonize(ext_modules, annotate=True, compiler_directives={"language_level": "3"}, ))

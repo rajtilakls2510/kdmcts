@@ -18,6 +18,7 @@ def create_env(env_id: cython.int, path: cython.pointer(cython.char), num_steps:
     data: cython.pointer(mjData) = mj_makeData(model)
     env: MujocoEnv = MujocoEnv(env_id=env_id, model=model, data=data, state_size=0, action_size=0)
     env.state_size = get_state_size(env)
+    env.obs_size = get_obs_size(env)
     env.action_size = get_action_size(env)
     env.num_steps = num_steps
     env.max_steps = max_steps
@@ -40,6 +41,14 @@ def get_state_size(env: MujocoEnv) -> cython.int:
         return get_ant_state_size(env)
     return 0
 
+
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def get_obs_size(env: MujocoEnv) -> cython.int:
+    if env.env_id == 0:
+        return get_ant_obs_size(env)
+    return 0
 
 @cython.cfunc
 @cython.nogil
@@ -131,7 +140,7 @@ def policy(params: PolicyParams, state: cython.pointer(cython.double), env: Mujo
         action[i] = params.b[i]
 
     # action = W.T @ state + action
-    cblas_dgemv(CblasRowMajor, CblasNoTrans, params.k, params.n, 1.0, params.w, params.n, state, 1, 1.0, action, 1)
+    cblas_dgemv(CblasRowMajor, CblasNoTrans, params.k, params.n, 1.0, params.w, params.n, cython.address(state[2]), 1, 1.0, action, 1)
 
     # action = Tanh(action)
     cblas_dscal(env.action_size, 2.0, action, 1) # action = 2 * action
@@ -150,6 +159,17 @@ def policy(params: PolicyParams, state: cython.pointer(cython.double), env: Mujo
 @cython.nogil
 @cython.exceptval(check=False)
 def get_ant_state_size(env: MujocoEnv) -> cython.int:
+    size: cython.int = env.model.nq
+    size += env.model.nv
+    size += env.model.na
+    size += 1
+    return size
+
+
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def get_ant_obs_size(env: MujocoEnv) -> cython.int:
     size: cython.int = env.model.nq - 2
     size += env.model.nv
     return size
@@ -169,10 +189,13 @@ def get_ant_state(env: MujocoEnv) -> cython.pointer(cython.double):
     state: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
                                                        calloc(env.state_size, cython.sizeof(cython.double)))
     i: cython.Py_ssize_t
-    for i in range(env.model.nq - 2):
-        state[i] = env.data.qpos[i + 2]
+    for i in range(env.model.nq):
+        state[i] = env.data.qpos[i]
     for i in range(env.model.nv):
-        state[i + env.model.nq - 2] = env.data.qvel[i]
+        state[i + env.model.nq] = env.data.qvel[i]
+    for i in range(env.model.na):
+        state[i + env.model.nq + env.model.nv] = env.data.act[i]
+    state[env.model.nq + env.model.nv + env.model.na] = env.data.time
     return state
 
 
@@ -182,10 +205,13 @@ def get_ant_state(env: MujocoEnv) -> cython.pointer(cython.double):
 def set_ant_state(env: MujocoEnv, state: cython.pointer(cython.double)) -> cython.void:
     # Used only for rollouts when the simulator is reset at a particular state
     i: cython.Py_ssize_t
-    for i in range(env.model.nq - 2):
-        env.data.qpos[i + 2] = state[i]
+    for i in range(env.model.nq):
+        env.data.qpos[i] = state[i]
     for i in range(env.model.nv):
-        env.data.qvel[i] = state[i + env.model.nq - 2]
+        env.data.qvel[i] = state[i + env.model.nq]
+    for i in range(env.model.na):
+        env.data.act[i] = state[i + env.model.nq + env.model.nv]
+    env.data.time = state[env.model.nq + env.model.nv + env.model.na]
 
 
 @cython.cfunc
@@ -229,7 +255,7 @@ def ant_is_healthy(env: MujocoEnv) -> cython.bint:
         healthy = healthy and isfinite(env.data.qpos[i])
     for i in range(env.model.nv):
         healthy = healthy and isfinite(env.data.qvel[i])
-    return not (0.2 <= env.data.qpos[0] <= 1.0) or not healthy
+    return (0.2 <= env.data.qpos[2] <= 1.0) or healthy
 
 @cython.cfunc
 @cython.nogil
@@ -286,27 +312,27 @@ def driver(env_name, weightT, bias):
     env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"], env_dict[env_name]["step_skip"], env_dict[env_name]["max_steps"])
     print(env.env_id, env.state_size, env.action_size)
 
-    w: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size*env.state_size, cython.sizeof(cython.double)))
-    b: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+    w: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(weightT.shape[0] * weightT.shape[1], cython.sizeof(cython.double)))
+    b: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(weightT.shape[1], cython.sizeof(cython.double)))
 
     i: cython.Py_ssize_t
     j: cython.Py_ssize_t
     for i in range(env.action_size):
-        for j in range(env.state_size):
-            w[i*env.state_size+j] = weightT[j][i]
+        for j in range(weightT.shape[0]):
+            w[i*weightT.shape[0]+j] = weightT[j][i]
     for j in range(env.action_size):
         b[j] = bias[j]
-    print("W:")
-    for i in range(env.action_size):
-        for j in range(env.state_size):
-            print(w[i * env.state_size + j], end=", ")
-        print("")
-    print("Bias:")
-    for j in range(env.action_size):
-        print(b[j], end=", ")
-    print("")
+    # print("W:")
+    # for i in range(env.action_size):
+    #     for j in range(env.state_size):
+    #         print(w[i * env.state_size + j], end=", ")
+    #     print("")
+    # print("Bias:")
+    # for j in range(env.action_size):
+    #     print(b[j], end=", ")
+    # print("")
 
-    params: PolicyParams = PolicyParams(k=env.action_size, n=env.state_size, w=w, b=b)
+    params: PolicyParams = PolicyParams(k=weightT.shape[1], n=weightT.shape[0], w=w, b=b)
     T: cython.pointer(gsl_rng_type) = gsl_rng_default
     rng: cython.pointer(gsl_rng) = gsl_rng_alloc(T)
     gsl_rng_set(rng, 6)

@@ -1,5 +1,6 @@
-import something
+# import something
 import mujoco_envs
+import mcts
 import tensorflow as tf
 
 try:
@@ -24,7 +25,7 @@ def print_hi(name):
     # new_action = tanh(state @ w + b)
     # print(new_action)
 
-    mujoco_envs.driver("ant", *model.get_weights())
+    mcts.driver("ant", *model.get_weights())
 
 if __name__ == '__main__':
     print_hi('PyCharm')

@@ -130,7 +130,7 @@ def policy(params: PolicyParams, state: cython.pointer(cython.double), env: Mujo
     for i in range(params.k):
         action[i] = params.b[i]
 
-    # action = W.T  @ state + action
+    # action = W.T @ state + action
     cblas_dgemv(CblasRowMajor, CblasNoTrans, params.k, params.n, 1.0, params.w, params.n, state, 1, 1.0, action, 1)
 
     # action = Tanh(action)
@@ -313,25 +313,29 @@ def driver(env_name, weightT, bias):
     reset_env(env, rng)
     total_reward: cython.double = 0.0
     start = time.perf_counter_ns()
+    original_data: cython.pointer(mjData) = env.data
+    env.data = mj_copyData(cython.NULL, env.model, env.data)
     for j in range(1000):
         state: cython.pointer(cython.double) = get_state(env)
-        # print(f"{j} State: ")
-        # for i in range(env.state_size):
-        #     print(state[i], end=", ")
-        # print("")
+        print(f"{j} State: ")
+        for i in range(env.state_size):
+            print(state[i], end=", ")
+        print("")
         action: cython.pointer(cython.double) = policy(params, state, env)
-        # print("Action: ")
-        # for i in range(env.action_size):
-        #     print(action[i], end=", ")
-        # print("")
+        print("Action: ")
+        for i in range(env.action_size):
+            print(action[i], end=", ")
+        print("")
         reward: cython.double = step(env, action)
         terminated: cython.bint = is_terminated(env, j)
         total_reward += reward
-        # print("Reward: ", reward, "Terminated: ", terminated, "Total Reward: ", total_reward)
+        print("Reward: ", reward, "Terminated: ", terminated, "Total Reward: ", total_reward)
         free(action)
         free(state)
     end = time.perf_counter_ns()
     print(f"Time: {(end - start) / 1e3}")
+    mj_deleteData(env.data)
+    env.data = original_data
     free(params.w)
     free(params.b)
     free_env(env)

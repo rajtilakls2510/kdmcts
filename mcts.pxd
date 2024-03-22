@@ -16,8 +16,7 @@ cdef struct MKDNode:
     double* n   # (num_kernels, )
     double* mu  # (num_kernels, action_dim)
     double* cov # (num_kernels, action_dim, action_dim)
-    int iterations
-    int samples_per_iteration
+    int iterations_left
     bint expanded
     MKDNode** children   # (num_kernels, )
 

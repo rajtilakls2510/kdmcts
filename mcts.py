@@ -12,7 +12,7 @@ from cython.cimports.gsl import gsl_rng_uniform, gsl_rng_type, gsl_rng_default, 
     gsl_rng_alloc, gsl_rng_set, gsl_rng, gsl_rng_free, gsl_ran_flat, gsl_ran_gaussian
 from cython.cimports.gsl import cblas_dgemm, CblasRowMajor, CblasNoTrans, CblasTrans, cblas_daxpy, \
     cblas_ddot, cblas_dcopy, cblas_dscal, cblas_dger
-from cython.cimports.mujoco import mjData, mj_copyData, mj_deleteData, mj_forward
+from cython.cimports.mujoco import mjData, mj_copyData, mj_deleteData, mj_forward, mjModel
 import time
 
 
@@ -96,13 +96,13 @@ def softmax(a: cython.pointer(cython.double), size: cython.Py_ssize_t) -> cython
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
-def mkd_create_tree_node(state: cython.pointer(cython.double), current_step: cython.int,
+def mkd_create_tree_node(env: MujocoEnv, current_step: cython.int,
                          parent: cython.pointer(MKDNode), parent_reward: cython.double, terminal: cython.bint,
                          num_kernels: cython.int,
                          action_dim: cython.int, max_iterations: cython.int, init_cov: cython.double) -> cython.pointer(
     MKDNode):
     node: cython.pointer(MKDNode) = cython.cast(cython.pointer(MKDNode), calloc(1, cython.sizeof(MKDNode)))
-    node.state = state
+    node.data = mj_copyData(cython.NULL, env.model, env.data)
     node.current_step = current_step
     node.parent = parent
     node.parent_reward = parent_reward
@@ -136,7 +136,7 @@ def mkd_create_tree_node(state: cython.pointer(cython.double), current_step: cyt
 @cython.exceptval(check=False)
 def mkd_free_tree_node(node: cython.pointer(MKDNode)) -> cython.void:
     if node != cython.NULL:
-        free(node.state)
+        mj_deleteData(node.data)
         omp_destroy_lock(cython.address(node.access_lock))
         node.parent = cython.NULL
         if not node.terminal:
@@ -229,18 +229,16 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
                         i * env.action_size * env.action_size + j * env.action_size + j] = node.init_cov
 
             # Perform one rollout per kernel to initialize w and n values
-            original_data: cython.pointer(mjData) = env.data
+            # original_data: cython.pointer(mjData) = env.data
             for i in range(node.num_kernels):
                 # Take an action and get next step
-                env.data = mj_copyData(cython.NULL, env.model, original_data)
-                set_state(env, node.state)
+                env.data = mj_copyData(cython.NULL, env.model, node.data)
                 r: cython.double = step(env, cython.address(node.mu[i * env.action_size]))
 
                 # Rollout from this next state
                 node.w[i] = r + mkd_rollout(node.current_step + 1, env, rollout_params, rng)
                 node.n[i] += 1
-                mj_deleteData(env.data)
-            env.data = original_data
+            # env.data = original_data
         else:
             node.expanded = True
 
@@ -249,20 +247,17 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
         if node.iterations_left == 0:
             node.children = cython.cast(cython.pointer(cython.pointer(MKDNode)),
                                         calloc(node.num_kernels, cython.sizeof(cython.pointer(MKDNode))))
-            original_data: cython.pointer(mjData) = env.data
+            # original_data: cython.pointer(mjData) = env.data
             i: cython.Py_ssize_t
             for i in range(node.num_kernels):
-                env.data = mj_copyData(cython.NULL, env.model, original_data)
-                set_state(env, node.state)
-                # mj_forward(env.model, env.data)
+                env.data = mj_copyData(cython.NULL, env.model, node.data)
                 r: cython.double = step(env, cython.address(node.mu[cython.cast(cython.int, i) * env.action_size]))
-                next_state: cython.pointer(cython.double) = get_state(env)
-                node.children[i] = mkd_create_tree_node(next_state, node.current_step + 1, node, r,
+
+                node.children[i] = mkd_create_tree_node(env, node.current_step + 1, node, r,
                                                         is_terminated(env, node.current_step + 1), node.num_kernels,
                                                         env.action_size, node.max_iterations, node.init_cov)
-                mj_deleteData(env.data)
-            env.data = original_data  # Don't need to restore the original value because env is not a pointer but it is a good practice
-            # mj_forward(env.model, env.data)
+
+            # env.data = original_data  # Don't need to restore the original value because env is not a pointer but it is a good practice
             node.expanded = True
         else:
             # Else, increase visitation count
@@ -342,7 +337,7 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
                                                                  cython.sizeof(cython.double)))
         i: cython.Py_ssize_t
         for i in range(env.action_size):
-            kcov[i * env.action_size + i] = 0.005  # TODO: Make it a hyper-parameters
+            kcov[i * env.action_size + i] = 0.005  # TODO: Make it a hyper-parameter
         # print("Backup: Kernel Finding")
         # Finding the ideal kernel to merge with using Euclidean distance
         scratch: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
@@ -542,8 +537,8 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
     # with cython.gil:
     #     print(f"Starting: {j}")
     # Saving the original state of the environment and will be restored later. The MCTS routines change env.data to reset state to an arbitrary timestep
-    original_data: cython.pointer(mjData) = env.data
-    env.data = mj_copyData(cython.NULL, env.model, original_data)
+    # original_data: cython.pointer(mjData) = env.data
+    # env.data = mj_copyData(cython.NULL, env.model, original_data)
 
     # print("Job: Selection")
     # Initializing a Random Number Generator
@@ -563,7 +558,7 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
     # print("Job: Rollout")
     # Sample action according to current node params and begin rollout from next state
     if not node.terminal:
-        set_state(env, node.state)
+        env.data = mj_copyData(cython.NULL, env.model, node.data)
         chosen_kernel: cython.int = 0
         sum: cython.double = 0.0
         rm: cython.double = gsl_rng_uniform(rng)
@@ -596,8 +591,8 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
     # Free allocated memory
     free(move_indices)
     gsl_rng_free(rng)
-    mj_deleteData(env.data)
-    env.data = original_data  # Don't need to restore the original data because env is not a pointer but it is a good practice
+    # mj_deleteData(env.data)
+    # env.data = original_data  # Don't need to restore the original data because env is not a pointer but it is a good practice
     # mj_forward(env.model, env.data)
     return depth
 
@@ -631,7 +626,7 @@ def driver(env_name, weightT, bias):
     env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5, "max_steps": 5000}}
     env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"],
                                 env_dict[env_name]["step_skip"], env_dict[env_name]["max_steps"])
-    print(env.env_id, env.obs_size, env.action_size, env.state_size)
+    print(env.env_id, env.state_size, env.action_size)
 
     w: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
                                                    calloc(weightT.shape[0] * weightT.shape[1],
@@ -642,28 +637,28 @@ def driver(env_name, weightT, bias):
     i: cython.Py_ssize_t
     j: cython.Py_ssize_t
     for i in range(env.action_size):
-        for j in range(env.obs_size):
-            w[i * env.obs_size + j] = weightT[j][i]
+        for j in range(env.state_size):
+            w[i * env.state_size + j] = weightT[j][i]
     for j in range(env.action_size):
         b[j] = bias[j]
     # print("W:")
     # for i in range(env.action_size):
-    #     for j in range(env.obs_size):
-    #         print(w[i * env.obs_size + j], end=", ")
+    #     for j in range(env.state_size):
+    #         print(w[i * env.state_size + j], end=", ")
     #     print("")
     # print("Bias:")
     # for j in range(env.action_size):
     #     print(b[j], end=", ")
     # print("")
 
-    params: PolicyParams = PolicyParams(k=env.action_size, n=env.obs_size, w=w, b=b)
+    params: PolicyParams = PolicyParams(k=env.action_size, n=env.state_size, w=w, b=b)
     T: cython.pointer(gsl_rng_type) = gsl_rng_default
     rng: cython.pointer(gsl_rng) = gsl_rng_alloc(T)
     gsl_rng_set(rng, 6)
     reset_env(env, rng)
 
     i = 0
-    root: cython.pointer(MKDNode) = mkd_create_tree_node(get_state(env), i, cython.NULL, 0, False, 10,
+    root: cython.pointer(MKDNode) = mkd_create_tree_node(env, i, cython.NULL, 0, False, 10,
                                                          env.action_size, 100, 3.0)
     total_reward: cython.double = 0.0
     print("env state:")
@@ -672,10 +667,14 @@ def driver(env_name, weightT, bias):
         print(f"{state[j]}", end=", ")
     print("")
     print("node state:")
-    state: cython.pointer(cython.double) = root.state
+    old_data: cython.pointer(mjData) = env.data
+    env.data = root.data
+    state: cython.pointer(cython.double) = get_state(env)
     for j in range(env.state_size):
         print(f"{state[j]}", end=", ")
     print("")
+    env.data = old_data
+
     while not is_terminated(env, i):
         print(f"Step: {i}")
         start = time.perf_counter_ns()
@@ -719,10 +718,13 @@ def driver(env_name, weightT, bias):
             print(f"{state[j]}", end=", ")
         print("")
         print("node state:")
-        state: cython.pointer(cython.double) = root.state
+        old_data: cython.pointer(mjData) = env.data
+        env.data = root.data
+        state: cython.pointer(cython.double) = get_state(env)
         for j in range(env.state_size):
             print(f"{state[j]}", end=", ")
         print("")
+        env.data = old_data
         print(f"Reward Collected: {total_reward}")
         i += 1
 

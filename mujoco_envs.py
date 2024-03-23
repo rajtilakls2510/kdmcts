@@ -4,7 +4,7 @@ import cython
 from cython.cimports.libc.stdlib import calloc, free
 from cython.cimports.mujoco import mj_loadXML, mjModel, mj_printModel, \
     mjData, mj_makeData, mj_printData, mj_resetData, mj_step, mj_deleteData, \
-    mj_deleteModel, mj_copyData
+    mj_deleteModel, mj_copyData, mj_step1, mj_step2
 from cython.cimports.gsl import CblasRowMajor, CblasNoTrans, CblasTrans, \
     cblas_dgemv, cblas_dscal, cblas_dcopy, cblas_ddot, gsl_rng, gsl_ran_gaussian, \
     gsl_ran_flat, gsl_rng_type, gsl_rng_default, gsl_rng_alloc, gsl_rng_set, gsl_rng_free
@@ -20,7 +20,6 @@ def create_env(env_id: cython.int, path: cython.pointer(cython.char), num_steps:
     data: cython.pointer(mjData) = mj_makeData(model)
     env: MujocoEnv = MujocoEnv(env_id=env_id, model=model, data=data, state_size=0, action_size=0)
     env.state_size = get_state_size(env)
-    env.obs_size = get_obs_size(env)
     env.action_size = get_action_size(env)
     env.num_steps = num_steps
     env.max_steps = max_steps
@@ -41,15 +40,6 @@ def free_env(env: MujocoEnv) -> cython.void:
 def get_state_size(env: MujocoEnv) -> cython.int:
     if env.env_id == 0:
         return get_ant_state_size(env)
-    return 0
-
-
-@cython.cfunc
-@cython.nogil
-@cython.exceptval(check=False)
-def get_obs_size(env: MujocoEnv) -> cython.int:
-    if env.env_id == 0:
-        return get_ant_obs_size(env)
     return 0
 
 @cython.cfunc
@@ -143,7 +133,7 @@ def policy(params: PolicyParams, state: cython.pointer(cython.double), env: Mujo
         action[i] = params.b[i]
 
     # action = W.T @ state + action
-    cblas_dgemv(CblasRowMajor, CblasNoTrans, params.k, params.n, 1.0, params.w, params.n, cython.address(state[2]), 1, 1.0, action, 1)
+    cblas_dgemv(CblasRowMajor, CblasNoTrans, params.k, params.n, 1.0, params.w, params.n, state, 1, 1.0, action, 1)
 
     # action = Tanh(action)
     cblas_dscal(env.action_size, 2.0, action, 1) # action = 2 * action
@@ -162,17 +152,6 @@ def policy(params: PolicyParams, state: cython.pointer(cython.double), env: Mujo
 @cython.nogil
 @cython.exceptval(check=False)
 def get_ant_state_size(env: MujocoEnv) -> cython.int:
-    size: cython.int = env.model.nq
-    size += env.model.nv
-    size += env.model.na
-    size += 1
-    return size
-
-
-@cython.cfunc
-@cython.nogil
-@cython.exceptval(check=False)
-def get_ant_obs_size(env: MujocoEnv) -> cython.int:
     size: cython.int = env.model.nq - 2
     size += env.model.nv
     return size
@@ -192,13 +171,10 @@ def get_ant_state(env: MujocoEnv) -> cython.pointer(cython.double):
     state: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
                                                        calloc(env.state_size, cython.sizeof(cython.double)))
     i: cython.Py_ssize_t
-    for i in range(env.model.nq):
-        state[i] = env.data.qpos[i]
+    for i in range(env.model.nq - 2):
+        state[i] = env.data.qpos[i + 2]
     for i in range(env.model.nv):
-        state[i + env.model.nq] = env.data.qvel[i]
-    for i in range(env.model.na):
-        state[i + env.model.nq + env.model.nv] = env.data.act[i]
-    state[env.model.nq + env.model.nv + env.model.na] = env.data.time
+        state[i + env.model.nq - 2] = env.data.qvel[i]
     return state
 
 
@@ -208,13 +184,10 @@ def get_ant_state(env: MujocoEnv) -> cython.pointer(cython.double):
 def set_ant_state(env: MujocoEnv, state: cython.pointer(cython.double)) -> cython.void:
     # Used only for rollouts when the simulator is reset at a particular state
     i: cython.Py_ssize_t
-    for i in range(env.model.nq):
-        env.data.qpos[i] = state[i]
+    for i in range(env.model.nq - 2):
+        env.data.qpos[i + 2] = state[i]
     for i in range(env.model.nv):
-        env.data.qvel[i] = state[i + env.model.nq]
-    for i in range(env.model.na):
-        env.data.act[i] = state[i + env.model.nq + env.model.nv]
-    env.data.time = state[env.model.nq + env.model.nv + env.model.na]
+        env.data.qvel[i] = state[i + env.model.nq - 2]
 
 
 @cython.cfunc
@@ -278,12 +251,12 @@ def ant_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.do
             action[i] = -1.0
         elif action[i] > 1.0:
             action[i] = 1.0
-
+    mj_step1(env.model, env.data)
     set_action(env, action)
     body_n: cython.int = 1 # TORSO
     previous_x: cython.double = env.data.xpos[body_n * 3 + 0]
-
-    perform_steps(env, env.num_steps)
+    mj_step2(env.model, env.data)
+    perform_steps(env, env.num_steps-1)
 
     new_x: cython.double = env.data.xpos[body_n * 3 + 0]
     xvel: cython.double = (new_x - previous_x) / (env.model.opt.timestep * env.num_steps)
@@ -296,6 +269,7 @@ def ant_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.do
 
     reward: cython.double = xvel + healthy_reward - ctrl_cost
     return reward
+
 
 @cython.cclass
 class MujocoPyEnv:

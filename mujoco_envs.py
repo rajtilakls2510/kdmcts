@@ -1,3 +1,5 @@
+# cython: cdivision = True
+
 import cython
 from cython.cimports.libc.stdlib import calloc, free
 from cython.cimports.mujoco import mj_loadXML, mjModel, mj_printModel, \
@@ -72,9 +74,10 @@ def get_state(env: MujocoEnv) -> cython.pointer(cython.double):
 @cython.nogil
 @cython.exceptval(check=False)
 def set_state(env: MujocoEnv, state: cython.pointer(cython.double)) -> cython.void:
-    # BEWARE: The state is only env.data.qpos+env.data.qvel. Setting a state doesn't modify the external control forces
     if env.env_id == 0:
         set_ant_state(env, state)
+
+
 
 
 @cython.cfunc
@@ -230,6 +233,7 @@ def get_ant_action(env: MujocoEnv) -> cython.pointer(cython.double):
 @cython.nogil
 @cython.exceptval(check=False)
 def set_ant_action(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.void:
+
     i: cython.Py_ssize_t
     for i in range(env.model.nu):
         env.data.ctrl[i] = action[i]
@@ -268,6 +272,13 @@ def ant_is_terminated(env: MujocoEnv, steps_taken: cython.int) -> cython.bint:
 @cython.nogil
 @cython.exceptval(check=False)
 def ant_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.double:
+    i: cython.Py_ssize_t
+    for i in range(env.action_size):
+        if action[i] < -1.0:
+            action[i] = -1.0
+        elif action[i] > 1.0:
+            action[i] = 1.0
+
     set_action(env, action)
     body_n: cython.int = 1 # TORSO
     previous_x: cython.double = env.data.xpos[body_n * 3 + 0]

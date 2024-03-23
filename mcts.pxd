@@ -13,10 +13,12 @@ cdef struct MKDNode:
     bint params_initialized
     double* pi  # (num_kernels, )
     double* w   # (num_kernels, )
-    double* n   # (num_kernels, )
+    int* n   # (num_kernels, )
     double* mu  # (num_kernels, action_dim)
     double* cov # (num_kernels, action_dim, action_dim)
     int iterations_left
+    int max_iterations
+    double init_cov
     bint expanded
     MKDNode** children   # (num_kernels, )
 

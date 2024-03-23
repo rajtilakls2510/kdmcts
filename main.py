@@ -15,8 +15,6 @@ def tanh(a):
 def print_hi(name):
     # something.some()
     model = tf.keras.models.load_model("actor_network")
-    print(model.summary())
-    print(model.get_weights())
 
     # state = tf.random.uniform(minval=0, maxval=1.0, shape=(4,27))
     # action = model(state)

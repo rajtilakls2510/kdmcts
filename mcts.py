@@ -1,9 +1,11 @@
+# cython: cdivision = True
+
 import cython
 from cython.parallel import prange
 from cython.cimports.mujoco_envs import MujocoEnv, PolicyParams, step, get_state, set_state, \
     is_terminated, policy, set_action, create_env, reset_env, free_env
 from cython.cimports.libc.stdlib import calloc, free
-from cython.cimports.libc.math import pow, sqrt, exp, isnan
+from cython.cimports.libc.math import pow, sqrt, exp, isnan, log
 from cython.cimports.openmp import omp_lock_t, omp_init_lock, omp_destroy_lock, \
     omp_set_lock, omp_unset_lock
 from cython.cimports.gsl import gsl_rng_uniform, gsl_rng_type, gsl_rng_default, \
@@ -87,6 +89,7 @@ def softmax(a: cython.pointer(cython.double), size: cython.Py_ssize_t) -> cython
     for i in range(size):
         a[i] /= sum
 
+
 # =================================== MKD MCTS ==========================
 
 
@@ -96,7 +99,7 @@ def softmax(a: cython.pointer(cython.double), size: cython.Py_ssize_t) -> cython
 def mkd_create_tree_node(state: cython.pointer(cython.double), current_step: cython.int,
                          parent: cython.pointer(MKDNode), parent_reward: cython.double, terminal: cython.bint,
                          num_kernels: cython.int,
-                         action_dim: cython.int, iterations_left: cython.int) -> cython.pointer(
+                         action_dim: cython.int, max_iterations: cython.int, init_cov: cython.double) -> cython.pointer(
     MKDNode):
     node: cython.pointer(MKDNode) = cython.cast(cython.pointer(MKDNode), calloc(1, cython.sizeof(MKDNode)))
     node.state = state
@@ -108,14 +111,16 @@ def mkd_create_tree_node(state: cython.pointer(cython.double), current_step: cyt
     node.num_kernels = num_kernels
     node.action_dim = action_dim
     node.params_initialized = False
-    node.iterations_left = iterations_left
+    node.iterations_left = max_iterations
+    node.max_iterations = max_iterations
+    node.init_cov = init_cov
     if not terminal:
         node.pi = cython.cast(cython.pointer(cython.double), calloc(num_kernels, cython.sizeof(cython.double)))
         i: cython.Py_ssize_t
         for i in range(num_kernels):
             node.pi[i] = 1.0 / num_kernels
         node.w = cython.cast(cython.pointer(cython.double), calloc(num_kernels, cython.sizeof(cython.double)))
-        node.n = cython.cast(cython.pointer(cython.double), calloc(num_kernels, cython.sizeof(cython.double)))
+        node.n = cython.cast(cython.pointer(cython.int), calloc(num_kernels, cython.sizeof(cython.int)))
         node.mu = cython.cast(cython.pointer(cython.double),
                               calloc(num_kernels * action_dim, cython.sizeof(cython.double)))
         node.cov = cython.cast(cython.pointer(cython.double),
@@ -157,17 +162,31 @@ def mkd_selection(node: cython.pointer(MKDNode), move_indices: cython.pointer(cy
     while node.expanded and not node.terminal:
         # Use node.pi to select an action
 
-        # Sampling an action from pi
-        rm: cython.double = gsl_rng_uniform(rng)
         selected_action_index: cython.Py_ssize_t = 0
-        sum: cython.double = 0
-        # omp_set_lock(cython.address(node.access_lock))
-        for selected_action_index in range(env.action_size):
-            sum += node.pi[selected_action_index]
-            if rm < sum:
-                break
-        # omp_unset_lock(cython.address(node.access_lock))
+        # # Sampling an action from pi
+        # rm: cython.double = gsl_rng_uniform(rng)
+        # sum: cython.double = 0
+        # # omp_set_lock(cython.address(node.access_lock))
+        # for selected_action_index in range(env.action_size):
+        #     sum += node.pi[selected_action_index]
+        #     if rm < sum:
+        #         break
+        # # omp_unset_lock(cython.address(node.access_lock))
 
+        # Sampling an action from UCT
+        scratch: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(node.num_kernels, cython.sizeof(cython.double)))
+        i: cython.Py_ssize_t
+        total_times: cython.int = 0
+        for i in range(node.num_kernels):
+            total_times += node.n[i]
+        for i in range(node.num_kernels):
+            scratch[i] = node.pi[i] + sqrt(log(total_times) / node.n[i])
+        max: cython.double = scratch[0]
+        for i in range(node.num_kernels):
+            if max < scratch[i]:
+                selected_action_index = i
+                max = scratch[i]
+        free(scratch)
 
         # Note down the index of the action taken and continue selection to child
         move_indices[move_last[0]] = cython.cast(cython.int, selected_action_index)
@@ -207,7 +226,7 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
                 for j in range(env.action_size):
                     node.mu[i * env.action_size + j] = gsl_ran_flat(rng, -1.0, 1.0)
                     node.cov[
-                        i * env.action_size * env.action_size + j * env.action_size + j] = 30.0  # TODO: Needs to be made a hyper-parameter
+                        i * env.action_size * env.action_size + j * env.action_size + j] = node.init_cov
 
             # Perform one rollout per kernel to initialize w and n values
             original_data: cython.pointer(mjData) = env.data
@@ -236,12 +255,11 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
                 env.data = mj_copyData(cython.NULL, env.model, original_data)
                 set_state(env, node.state)
                 # mj_forward(env.model, env.data)
-                r: cython.double = step(env, cython.address(node.mu[i * env.action_size]))
+                r: cython.double = step(env, cython.address(node.mu[cython.cast(cython.int, i) * env.action_size]))
                 next_state: cython.pointer(cython.double) = get_state(env)
                 node.children[i] = mkd_create_tree_node(next_state, node.current_step + 1, node, r,
                                                         is_terminated(env, node.current_step + 1), node.num_kernels,
-                                                        env.action_size, 100)
-                # TODO: Change iterations_left to hyper-parameters
+                                                        env.action_size, node.max_iterations, node.init_cov)
                 mj_deleteData(env.data)
             env.data = original_data  # Don't need to restore the original value because env is not a pointer but it is a good practice
             # mj_forward(env.model, env.data)
@@ -265,7 +283,7 @@ def mkd_expansion(node: cython.pointer(MKDNode), move_indices: cython.pointer(cy
     # If the node has not been expanded by another thread, expand it
     if not node.expanded:
         mkd_expand_node(node, env, rollout_params, rng)
-        # LOCK IS NOT RELEASED UNTIL pi FOR node IS CALCULATED. THIS IS TO MAKE SURE OTHER THREADS WAIT FOR EXPANSION COMPLETION
+        omp_unset_lock(cython.address(node.access_lock))
     else:
         # Else, release the lock immediately and resume from selection phase as another thread has already expanded this node
         omp_unset_lock(cython.address(node.access_lock))
@@ -290,6 +308,13 @@ def mkd_rollout(steps_taken: cython.int, env: MujocoEnv,
         i: cython.Py_ssize_t
         for i in range(env.action_size):
             action[i] += gsl_ran_gaussian(rng, 0.1)  # Adding Exploration Noise
+
+        # # Random Policy
+        # action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+        # i: cython.Py_ssize_t
+        # for i in range(env.action_size):
+        #     action[i] = gsl_ran_flat(rng, -1.0, 1.0)
+
         total_reward += step(env, action)
         free(state)
         free(action)
@@ -328,7 +353,8 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
         cblas_daxpy(env.action_size, -1.0, kmu, 1, scratch, 1)  # scratch = scratch - kmu
         min_sum: cython.double = cblas_ddot(env.action_size, scratch, 1, scratch, 1)  # dot(scratch, scratch)
         for i in range(node.num_kernels):
-            cblas_dcopy(env.action_size, cython.address(node.mu[cython.cast(cython.int, i) * env.action_size]), 1, scratch,
+            cblas_dcopy(env.action_size, cython.address(node.mu[cython.cast(cython.int, i) * env.action_size]), 1,
+                        scratch,
                         1)  # scratch = node.mu[i]
             cblas_daxpy(env.action_size, -1.0, kmu, 1, scratch, 1)  # scratch = scratch - kmu
             sum: cython.double = cblas_ddot(env.action_size, scratch, 1, scratch, 1)  # dot(scratch, scratch)
@@ -341,11 +367,12 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
         # Z-score standardization of the kernel weights and merge
         mean: cython.double = 0
         for i in range(node.num_kernels):  # mean = sum(node.w / node.n) / node.num_kernels
-            mean += (node.w[i] / node.n[i])
+            mean += node.w[i]
         mean /= node.num_kernels
-        scratch2: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(node.num_kernels, cython.sizeof(cython.double)))
+        scratch2: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                              calloc(node.num_kernels, cython.sizeof(cython.double)))
         for i in range(node.num_kernels):  # scratch2 = (node.w / node.n - mean)
-            scratch2[i] = (node.w[i] / node.n[i] - mean)
+            scratch2[i] = (node.w[i] - mean)
         std: cython.double = cblas_ddot(node.num_kernels, scratch2, 1, scratch2,
                                         1) / node.num_kernels  # std = dot(scratch2, scratch2) / node.num_kernels
         free(scratch2)
@@ -376,7 +403,7 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
         # print("")
 
         # Merging Means, Cov, and Weights
-        k_w_1: cython.double = (node.w[min_kernel_index] / node.n[min_kernel_index] - mean) / std
+        k_w_1: cython.double = (node.w[min_kernel_index] - mean) / std
         k_w_2: cython.double = (rtn - mean) / std
         k_w_1 = exp(k_w_1)
         k_w_2 = exp(k_w_2)
@@ -402,12 +429,11 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
         #     print(f"{scratch[i]}", end=", ")
         # print("")
 
-
         # node.cov[min_kernel] += (node.mu[min_kernel] @ node.mu[min_kernel]^T)
-        cblas_dger(CblasRowMajor, env.action_size, env.action_size, 1.0, cython.address(node.mu[min_kernel_index * env.action_size]), 1,
+        cblas_dger(CblasRowMajor, env.action_size, env.action_size, 1.0,
+                   cython.address(node.mu[min_kernel_index * env.action_size]), 1,
                    cython.address(node.mu[min_kernel_index * env.action_size]), 1,
                    cython.address(node.cov[min_kernel_index * env.action_size * env.action_size]), env.action_size)
-
 
         # kcov += (kmu @ kmu^T)
         cblas_dger(CblasRowMajor, env.action_size, env.action_size, 1.0, kmu, 1, kmu, 1, kcov, env.action_size)
@@ -446,9 +472,21 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
         #               end=", ")
         # print("")
         node.n[min_kernel_index] += 1
-        node.w[min_kernel_index] = node.w[min_kernel_index] + (1 / node.n[min_kernel_index]) * (rtn - node.w[min_kernel_index])
+        node.w[min_kernel_index] = node.w[min_kernel_index] + (1 / node.n[min_kernel_index]) * (
+                rtn - node.w[min_kernel_index])
+        mean: cython.double = 0
+        for i in range(node.num_kernels):  # mean = sum(node.w / node.n) / node.num_kernels
+            mean += node.w[i]
+        mean /= node.num_kernels
+        scratch2: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                              calloc(node.num_kernels, cython.sizeof(cython.double)))
+        for i in range(node.num_kernels):  # scratch2 = (node.w / node.n - mean)
+            scratch2[i] = (node.w[i] - mean)
+        std: cython.double = cblas_ddot(node.num_kernels, scratch2, 1, scratch2,
+                                        1) / node.num_kernels  # std = dot(scratch2, scratch2) / node.num_kernels
+        free(scratch2)
         for i in range(node.num_kernels):
-            node.pi[i] = node.w[i] #/ node.n[i]
+            node.pi[i] = (node.w[i] - mean) / std  # / node.n[i]
         softmax(node.pi, node.num_kernels)
         # print(f"Backup: Free scratch spaces")
         free(scratch)
@@ -464,9 +502,23 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
         move_last[0] -= 1
         omp_set_lock(cython.address(node.access_lock))
         node.n[move_indices[move_last[0]]] += 1
-        node.w[move_indices[move_last[0]]] = node.w[move_indices[move_last[0]]] + (1 / node.n[move_indices[move_last[0]]]) * (rtn - node.w[move_indices[move_last[0]]])
+        node.w[move_indices[move_last[0]]] = node.w[move_indices[move_last[0]]] + (
+                1 / node.n[move_indices[move_last[0]]]) * (rtn - node.w[move_indices[move_last[0]]])
+        mean: cython.double = 0
+        i: cython.Py_ssize_t
+        for i in range(node.num_kernels):  # mean = sum(node.w / node.n) / node.num_kernels
+            mean += node.w[i]
+        mean /= node.num_kernels
+        scratch2: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                              calloc(node.num_kernels, cython.sizeof(cython.double)))
+        for i in range(node.num_kernels):  # scratch2 = (node.w / node.n - mean)
+            scratch2[i] = (node.w[i] - mean)
+        std: cython.double = cblas_ddot(node.num_kernels, scratch2, 1, scratch2,
+                                        1) / node.num_kernels  # std = dot(scratch2, scratch2) / node.num_kernels
+        free(scratch2)
+        i: cython.Py_ssize_t
         for i in range(node.num_kernels):
-            node.pi[i] = node.w[i] #/ node.n[i]
+            node.pi[i] = (node.w[i] - mean) / std  # / node.n[i]
         softmax(node.pi, node.num_kernels)
         rtn += node.parent_reward
         omp_unset_lock(cython.address(node.access_lock))
@@ -507,7 +559,7 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
     # with cython.gil:
     #     print(f"After expansion: {j} {node.expanded} {node.terminal}")
     # If tree-parallelized, lock might be held on the leaf node depending on whether it was expanded or not. Unlock it.
-    omp_unset_lock(cython.address(node.access_lock))
+
     # print("Job: Rollout")
     # Sample action according to current node params and begin rollout from next state
     if not node.terminal:
@@ -521,11 +573,12 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
             if rm < sum:
                 chosen_kernel = cython.cast(cython.int, i)
                 break
+        # with cython.gil:
+        #     print(f"Chosen kernel: {chosen_kernel}")
         action: cython.pointer(cython.double) = sample_multivariate_gaussian(1, cython.address(
-            node.mu[cython.cast(cython.int, chosen_kernel) * env.action_size]),
+            node.mu[chosen_kernel * env.action_size]),
                                                                              cython.address(node.cov[
-                                                                                                cython.cast(cython.int,
-                                                                                                            chosen_kernel) * env.action_size * env.action_size]),
+                                                                                                chosen_kernel * env.action_size * env.action_size]),
                                                                              env.action_size, rng)
 
         r: cython.double = step(env, action)
@@ -548,8 +601,10 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
     # mj_forward(env.model, env.data)
     return depth
 
+
 @cython.cfunc
-def mkd_mcts(num_simulations: cython.int, root: cython.pointer(MKDNode), max_depth: cython.int, env: MujocoEnv, rollout_params: PolicyParams) -> cython.int:
+def mkd_mcts(num_simulations: cython.int, root: cython.pointer(MKDNode), max_depth: cython.int, env: MujocoEnv,
+             rollout_params: PolicyParams) -> cython.int:
     i: cython.Py_ssize_t
     depths: cython.pointer(cython.int) = cython.cast(cython.pointer(cython.int),
                                                      calloc(num_simulations, cython.sizeof(cython.int)))
@@ -564,6 +619,13 @@ def mkd_mcts(num_simulations: cython.int, root: cython.pointer(MKDNode), max_dep
     free(depths)
     return max_depth
 
+# @cython.cfunc
+# @cython.nogil
+# @cython.exceptval(check=False)
+# def prune_node(node: cython.pointer(MKDNode), keep_kernel: cython.Py_ssize_t):
+#     i: cython.Py_ssize_t
+#     for i in range(node.num_kernels):
+#
 
 def driver(env_name, weightT, bias):
     env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5, "max_steps": 5000}}
@@ -600,25 +662,70 @@ def driver(env_name, weightT, bias):
     gsl_rng_set(rng, 6)
     reset_env(env, rng)
 
-    start = time.perf_counter_ns()
-    root: cython.pointer(MKDNode) = mkd_create_tree_node(get_state(env), 0, cython.NULL, 0, False, 10,
-                                                         env.action_size, 100)
-    print("Here")
-    print("Depth:", mkd_mcts(500, root, 100, env, params))
-    end = time.perf_counter_ns()
-    print(f"Time: {(end - start) / 1e6} ms")
-    print("W:")
-    for i in range(root.num_kernels):
-        print(f"{root.w[i]}, ", end="")
+    i = 0
+    root: cython.pointer(MKDNode) = mkd_create_tree_node(get_state(env), i, cython.NULL, 0, False, 10,
+                                                         env.action_size, 100, 3.0)
+    total_reward: cython.double = 0.0
+    print("env state:")
+    state: cython.pointer(cython.double) = get_state(env)
+    for j in range(env.state_size):
+        print(f"{state[j]}", end=", ")
     print("")
-    print("N:")
-    for i in range(root.num_kernels):
-        print(f"{root.n[i]}, ", end="")
+    print("node state:")
+    state: cython.pointer(cython.double) = root.state
+    for j in range(env.state_size):
+        print(f"{state[j]}", end=", ")
     print("")
-    print("P:")
-    for i in range(root.num_kernels):
-        print(f"{root.pi[i]}, ", end="")
-    print("")
+    while not is_terminated(env, i):
+        print(f"Step: {i}")
+        start = time.perf_counter_ns()
+        print("Depth:", mkd_mcts(1000, root, 100, env, params))
+        end = time.perf_counter_ns()
+        print(f"Time: {(end - start) / 1e6} ms")
+        j: cython.Py_ssize_t
+        print("W:")
+        for j in range(root.num_kernels):
+            print(f"{root.w[j]}, ", end="")
+        print("")
+        print("N:")
+        for j in range(root.num_kernels):
+            print(f"{root.n[j]}, ", end="")
+        print("")
+        print("P:")
+        for j in range(root.num_kernels):
+            print(f"{root.pi[j]}, ", end="")
+        print("")
+        max: cython.double = root.w[0]
+        selected_kernel: cython.Py_ssize_t = 0
+        for j in range(root.num_kernels):
+            if max < root.w[j]:
+                max = root.w[j]
+                selected_kernel = j
+        print(f"Selected Kernel: {selected_kernel}")
+        print("Action: ")
+        for j in range(env.action_size):
+            print(f"{root.mu[cython.cast(cython.int, selected_kernel) * env.action_size + j]}", end=", ")
+        print("")
+
+        total_reward += step(env, cython.address(root.mu[cython.cast(cython.int, selected_kernel) * env.action_size]))
+
+        node: cython.pointer(MKDNode) = root.children[selected_kernel]
+        root.children[selected_kernel] = cython.NULL
+        mkd_free_tree_node(root)
+        root = node
+        print("env state:")
+        state: cython.pointer(cython.double) = get_state(env)
+        for j in range(env.state_size):
+            print(f"{state[j]}", end=", ")
+        print("")
+        print("node state:")
+        state: cython.pointer(cython.double) = root.state
+        for j in range(env.state_size):
+            print(f"{state[j]}", end=", ")
+        print("")
+        print(f"Reward Collected: {total_reward}")
+        i += 1
+
     mkd_free_tree_node(root)
     free(params.w)
     free(params.b)

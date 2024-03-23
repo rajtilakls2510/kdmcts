@@ -4,7 +4,7 @@ import cython
 from cython.parallel import prange
 from cython.cimports.mujoco_envs import MujocoEnv, PolicyParams, step, get_state, set_state, \
     is_terminated, policy, set_action, create_env, reset_env, free_env, get_mj_state, \
-    set_mj_state, get_mj_ctrl, set_mj_ctrl
+    set_mj_state
 from cython.cimports.libc.stdlib import calloc, free
 from cython.cimports.libc.math import pow, sqrt, exp, isnan, log
 from cython.cimports.openmp import omp_lock_t, omp_init_lock, omp_destroy_lock, \
@@ -104,7 +104,6 @@ def mkd_create_tree_node(env: MujocoEnv, current_step: cython.int,
     MKDNode):
     node: cython.pointer(MKDNode) = cython.cast(cython.pointer(MKDNode), calloc(1, cython.sizeof(MKDNode)))
     node.mj_state = get_mj_state(env)
-    node.mj_ctrl = get_mj_ctrl(env)
     node.current_step = current_step
     node.parent = parent
     node.parent_reward = parent_reward
@@ -139,7 +138,6 @@ def mkd_create_tree_node(env: MujocoEnv, current_step: cython.int,
 def mkd_free_tree_node(node: cython.pointer(MKDNode)) -> cython.void:
     if node != cython.NULL:
         free(node.mj_state)
-        free(node.mj_ctrl)
         omp_destroy_lock(cython.address(node.access_lock))
         node.parent = cython.NULL
         if not node.terminal:
@@ -233,18 +231,17 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
 
             # Perform one rollout per kernel to initialize w and n values
             original_data: cython.pointer(mjData) = env.data
-            env.data = mj_copyData(cython.NULL, env.model, env.data)
             for i in range(node.num_kernels):
                 # Take an action and get next step
+                env.data = mj_copyData(cython.NULL, env.model, original_data)
 
                 set_mj_state(env, node.mj_state)    # Resetting the controller to node
-                set_mj_ctrl(env, node.mj_ctrl)
                 r: cython.double = step(env, cython.address(node.mu[i * env.action_size]))
 
                 # Rollout from this next state
                 node.w[i] = r + mkd_rollout(node.current_step + 1, env, rollout_params, rng)
                 node.n[i] += 1
-            mj_deleteData(env.data)
+                mj_deleteData(env.data)
             env.data = original_data
         else:
             node.expanded = True
@@ -255,17 +252,16 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
             node.children = cython.cast(cython.pointer(cython.pointer(MKDNode)),
                                         calloc(node.num_kernels, cython.sizeof(cython.pointer(MKDNode))))
             original_data: cython.pointer(mjData) = env.data
-            env.data = mj_copyData(cython.NULL, env.model, env.data)
             i: cython.Py_ssize_t
             for i in range(node.num_kernels):
+                env.data = mj_copyData(cython.NULL, env.model, original_data)
                 set_mj_state(env, node.mj_state)    # Resetting the controller to node
-                set_mj_ctrl(env, node.mj_ctrl)
                 r: cython.double = step(env, cython.address(node.mu[cython.cast(cython.int, i) * env.action_size]))
 
                 node.children[i] = mkd_create_tree_node(env, node.current_step + 1, node, r,
                                                         is_terminated(env, node.current_step + 1), node.num_kernels,
                                                         env.action_size, node.max_iterations, node.init_cov)
-            mj_deleteData(env.data)
+                mj_deleteData(env.data)
             env.data = original_data  # Don't need to restore the original value because env is not a pointer but it is a good practice
             node.expanded = True
         else:
@@ -522,7 +518,7 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
         free(scratch2)
         i: cython.Py_ssize_t
         for i in range(node.num_kernels):
-            node.pi[i] = (node.w[i] - mean) / std  # / node.n[i]
+            node.pi[i] = (node.w[i])# - mean) / std  # / node.n[i]
         softmax(node.pi, node.num_kernels)
         rtn += node.parent_reward
         omp_unset_lock(cython.address(node.access_lock))
@@ -570,7 +566,6 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
         original_data: cython.pointer(mjData) = env.data
         env.data = mj_copyData(cython.NULL, env.model, env.data)
         set_mj_state(env, node.mj_state)    # Resetting the controller to node
-        set_mj_ctrl(env, node.mj_ctrl)
         chosen_kernel: cython.int = 0
         sum: cython.double = 0.0
         rm: cython.double = gsl_rng_uniform(rng)
@@ -640,7 +635,7 @@ def driver(env_name, weightT, bias):
     env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5, "max_steps": 5000}}
     env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"],
                                 env_dict[env_name]["step_skip"], env_dict[env_name]["max_steps"])
-    print(env.env_id, env.state_size, env.action_size, env.mj_state_size, env.mj_ctrl_size)
+    print(env.env_id, env.state_size, env.action_size, env.mj_state_size)
 
     w: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
                                                    calloc(weightT.shape[0] * weightT.shape[1],
@@ -718,7 +713,9 @@ def driver(env_name, weightT, bias):
         print("")
 
         total_reward += step(env, cython.address(root.mu[cython.cast(cython.int, selected_kernel) * env.action_size]))
-
+        if root.children == cython.NULL:
+            root.iterations_left = 0
+            mkd_expand_node(root, env, params, rng)
         node: cython.pointer(MKDNode) = root.children[selected_kernel]
         root.children[selected_kernel] = cython.NULL
         mkd_free_tree_node(root)

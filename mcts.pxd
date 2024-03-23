@@ -3,7 +3,6 @@ from cython.cimports.openmp import omp_lock_t
 
 cdef struct MKDNode:
     double* mj_state
-    double* mj_ctrl
     int current_step
     MKDNode* parent
     double parent_reward

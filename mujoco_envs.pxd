@@ -5,6 +5,8 @@ cdef struct MujocoEnv:
     int env_id
     mjModel* model
     mjData* data
+    int mj_state_size
+    int mj_ctrl_size
     int state_size
     int action_size
     int num_steps   # Number of raw env steps to take with a particular action set
@@ -12,8 +14,14 @@ cdef struct MujocoEnv:
 
 cdef MujocoEnv create_env(int env_id, char* path, int num_steps, int max_steps) noexcept nogil
 cdef void free_env(MujocoEnv env) noexcept nogil
+cdef int get_mj_state_size(MujocoEnv env) noexcept nogil
+cdef int get_mj_ctrl_size(MujocoEnv env) noexcept nogil
 cdef int get_state_size(MujocoEnv env) noexcept nogil
 cdef int get_action_size(MujocoEnv env) noexcept nogil
+cdef double* get_mj_state(MujocoEnv env) noexcept nogil
+cdef void set_mj_state(MujocoEnv env, double* mj_state) noexcept nogil
+cdef double* get_mj_ctrl(MujocoEnv env) noexcept nogil
+cdef void set_mj_ctrl(MujocoEnv env, double* mj_ctrl) noexcept nogil
 cdef double* get_state(MujocoEnv env) noexcept nogil
 cdef void set_state(MujocoEnv env, double* state) noexcept nogil
 cdef double* get_action(MujocoEnv env) noexcept nogil

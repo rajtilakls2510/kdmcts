@@ -19,6 +19,8 @@ def create_env(env_id: cython.int, path: cython.pointer(cython.char), num_steps:
     model: cython.pointer(mjModel) = mj_loadXML(path, cython.NULL, err, 300)
     data: cython.pointer(mjData) = mj_makeData(model)
     env: MujocoEnv = MujocoEnv(env_id=env_id, model=model, data=data, state_size=0, action_size=0)
+    env.mj_state_size = get_mj_state_size(env)
+    env.mj_ctrl_size = get_mj_ctrl_size(env)
     env.state_size = get_state_size(env)
     env.action_size = get_action_size(env)
     env.num_steps = num_steps
@@ -32,6 +34,78 @@ def create_env(env_id: cython.int, path: cython.pointer(cython.char), num_steps:
 def free_env(env: MujocoEnv) -> cython.void:
     mj_deleteData(env.data)
     mj_deleteModel(env.model)
+
+
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def get_mj_state_size(env: MujocoEnv) -> cython.int:
+    return 1 + env.model.nq + env.model.nv + env.model.na
+
+
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def get_mj_ctrl_size(env: MujocoEnv) -> cython.int:
+    return env.model.nu + env.model.nv + env.model.nbody*6
+
+
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def get_mj_state(env: MujocoEnv) -> cython.pointer(cython.double):
+    mj_state: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.mj_state_size, cython.sizeof(cython.double)))
+    mj_state[0] = env.data.time
+    i: cython.Py_ssize_t
+    for i in range(env.model.nq):
+        mj_state[i + 1] = env.data.qpos[i]
+    for i in range(env.model.nv):
+        mj_state[i + env.model.nq + 1] = env.data.qvel[i]
+    for i in range(env.model.na):
+        mj_state[i + env.model.nv + env.model.nq + 1] = env.data.act[i]
+    return mj_state
+
+
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def set_mj_state(env: MujocoEnv, mj_state: cython.pointer(cython.double)) -> cython.void:
+    env.data.time = mj_state[0]
+    i: cython.Py_ssize_t
+    for i in range(env.model.nq):
+        env.data.qpos[i] = mj_state[i + 1]
+    for i in range(env.model.nv):
+        env.data.qvel[i] = mj_state[i + env.model.nq + 1]
+    for i in range(env.model.na):
+        env.data.act[i] = mj_state[i + env.model.nv + env.model.nq + 1]
+
+
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def get_mj_ctrl(env: MujocoEnv) -> cython.pointer(cython.double):
+    mj_ctrl: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.mj_ctrl_size, cython.sizeof(cython.double)))
+    i: cython.Py_ssize_t
+    for i in range(env.model.nu):
+        mj_ctrl[i] = env.data.ctrl[i]
+    for i in range(env.model.nv):
+        mj_ctrl[i + env.model.nu] = env.data.qfrc_applied[i]
+    for i in range(env.model.nbody*6):
+        mj_ctrl[i + env.model.nv + env.model.nu] = env.data.xfrc_applied[i]
+    return mj_ctrl
+
+
+@cython.cfunc
+@cython.nogil
+@cython.exceptval(check=False)
+def set_mj_ctrl(env: MujocoEnv, mj_ctrl: cython.pointer(cython.double)) -> cython.void:
+    i: cython.Py_ssize_t
+    for i in range(env.model.nu):
+        env.data.ctrl[i] = mj_ctrl[i]
+    for i in range(env.model.nv):
+        env.data.qfrc_applied[i] = mj_ctrl[i + env.model.nu]
+    for i in range(env.model.nbody * 6):
+        env.data.xfrc_applied[i] = mj_ctrl[i + env.model.nv + env.model.nu]
 
 
 @cython.cfunc
@@ -66,8 +140,6 @@ def get_state(env: MujocoEnv) -> cython.pointer(cython.double):
 def set_state(env: MujocoEnv, state: cython.pointer(cython.double)) -> cython.void:
     if env.env_id == 0:
         set_ant_state(env, state)
-
-
 
 
 @cython.cfunc
@@ -295,7 +367,7 @@ class MujocoPyEnv:
 def driver(env_name, weightT, bias):
     env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5, "max_steps": 5000}}
     env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"], env_dict[env_name]["step_skip"], env_dict[env_name]["max_steps"])
-    print(env.env_id, env.state_size, env.action_size)
+    print(env.env_id, env.state_size, env.action_size, env.mj_state_size, env.mj_ctrl_size)
 
     w: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(weightT.shape[0] * weightT.shape[1], cython.sizeof(cython.double)))
     b: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(weightT.shape[1], cython.sizeof(cython.double)))
@@ -324,8 +396,6 @@ def driver(env_name, weightT, bias):
     reset_env(env, rng)
     total_reward: cython.double = 0.0
     start = time.perf_counter_ns()
-    original_data: cython.pointer(mjData) = env.data
-    env.data = mj_copyData(cython.NULL, env.model, env.data)
     for j in range(1000):
         state: cython.pointer(cython.double) = get_state(env)
         print(f"{j} State: ")
@@ -345,8 +415,7 @@ def driver(env_name, weightT, bias):
         free(state)
     end = time.perf_counter_ns()
     print(f"Time: {(end - start) / 1e3}")
-    mj_deleteData(env.data)
-    env.data = original_data
+    # mj_deleteData(env.data)
     free(params.w)
     free(params.b)
     free_env(env)

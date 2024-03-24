@@ -1,4 +1,4 @@
-cdef extern from "mjvisualize.h" nogil:
+cdef extern from "mujoco/mjvisualize.h" nogil:
 
     #---------------------------- global constants -----------------------------------------
 

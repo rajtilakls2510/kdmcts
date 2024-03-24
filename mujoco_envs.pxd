@@ -1,4 +1,4 @@
-from cython.cimports.mujoco import mjModel, mjData
+from cython.cimports.mujoco import mjModel, mjData, mjtNum
 from cython.cimports.gsl import gsl_rng
 
 cdef struct MujocoEnv:
@@ -16,8 +16,8 @@ cdef void free_env(MujocoEnv env) noexcept nogil
 cdef int get_mj_state_size(MujocoEnv env) noexcept nogil
 cdef int get_state_size(MujocoEnv env) noexcept nogil
 cdef int get_action_size(MujocoEnv env) noexcept nogil
-cdef double* get_mj_state(MujocoEnv env) noexcept nogil
-cdef void set_mj_state(MujocoEnv env, double* mj_state) noexcept nogil
+cdef mjtNum* get_mj_state(MujocoEnv env) noexcept nogil
+cdef void set_mj_state(MujocoEnv env, mjtNum* mj_state) noexcept nogil
 cdef double* get_state(MujocoEnv env) noexcept nogil
 cdef void set_state(MujocoEnv env, double* state) noexcept nogil
 cdef double* get_action(MujocoEnv env) noexcept nogil

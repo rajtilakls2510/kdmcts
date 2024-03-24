@@ -1,8 +1,8 @@
-from cython.cimports.mujoco import mjData
+from cython.cimports.mujoco import mjData, mjtNum
 from cython.cimports.openmp import omp_lock_t
 
 cdef struct MKDNode:
-    double* mj_state
+    mjtNum* mj_state
     int current_step
     MKDNode* parent
     double parent_reward

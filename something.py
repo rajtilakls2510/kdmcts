@@ -1,7 +1,6 @@
 import cython
-from cython.cimports.mujoco import mj_loadXML, mjModel, mj_printModel, \
-    mjData, mj_makeData, mj_printData, mj_resetData, mj_step, mj_deleteData, \
-    mj_deleteModel, mj_copyData
+from cython.cimports.mujoco import mj_loadXML, mjModel, mjData, mj_makeData, mj_deleteModel, \
+    mj_deleteData, mj_resetData, mj_stateSize, mj_getState, mj_setState, mjSTATE_INTEGRATION, mjtNum
 from cython.cimports.libc.stdlib import calloc, free
 from cython.parallel import prange
 from cython.cimports.gsl import gsl_rng_type, gsl_rng_default, gsl_rng, gsl_rng_alloc, gsl_rng_set, gsl_rng_uniform, gsl_rng_free, gsl_ran_gaussian
@@ -75,12 +74,12 @@ def generate_random_numbers(seed: cython.int, n: cython.int):
     return random_numbers
 
 
-@cython.cfunc
-@cython.nogil
-@cython.exceptval(check=False)
-def rollout(n:cython.Py_ssize_t, n_steps: cython.int, model: cython.pointer(mjModel), data: cython.pointer(mjData)) -> cython.void:
-    for j in range(n_steps):
-        mj_step(model, data)
+# @cython.cfunc
+# @cython.nogil
+# @cython.exceptval(check=False)
+# def rollout(n:cython.Py_ssize_t, n_steps: cython.int, model: cython.pointer(mjModel), data: cython.pointer(mjData)) -> cython.void:
+#     for j in range(n_steps):
+#         mj_step(model, data)
 
         # with cython.gil:
         #     state = np.zeros(shape=model.nq-2+model.nv)
@@ -108,55 +107,22 @@ def some2(path: str):
     err: cython.char[300]
     model: cython.pointer(mjModel) = mj_loadXML(path.encode("UTF-8"), cython.NULL, err, 300)
     data: cython.pointer(mjData) = mj_makeData(model)
-    # mj_printData(model, data, file.encode())
     mj_resetData(model, data)
-    reset_noise = np.random.uniform(low=-0.1, high=0.1, size=model.nq)
-    j: cython.Py_ssize_t
-    for j in range(model.nq):
-        data.qpos[j] += reset_noise[j]
 
-    for j in range(model.nbody):
-        print((model.names+model.name_bodyadr[j]).decode() == "torso")
+    size: cython.int = mj_stateSize(model, mjSTATE_INTEGRATION)
+    state: cython.pointer(mjtNum) = cython.cast(cython.pointer(mjtNum), calloc(size, cython.sizeof(mjtNum)))
+    mj_getState(model, data, state, mjSTATE_INTEGRATION)
 
-    # k: cython.Py_ssize_t
-    # start = time.perf_counter_ns()
-    # print("Here")
-    # for k in range(50):
-    #     datas: cython.pointer(cython.pointer(mjData)) = cython.cast(cython.pointer(cython.pointer(mjData)), calloc(20, cython.sizeof(cython.pointer(mjData))))
-    #
-    #     for j in range(20):
-    #         datas[j] = mj_makeData(model)
-    #         mj_copyData(datas[j], model, data)
-    #
-    #     for j in prange(20, nogil=True):
-    #         rollout(j, 1000, model, datas[j])
-    #     for j in range(20):
-    #         mj_deleteData(datas[j])
-    #     free(datas)
-    # end = time.perf_counter_ns()
-    # print(f"{(end-start) / 1e6}")
-    # print("Here2")
-    # for j in range(1000):
-    #     mj_step(model, data)
-    #
-    #     state = np.zeros(shape=model.nq-2+model.nv)
-    #     i: cython.Py_ssize_t
-    #     for i in range(model.nq-2):
-    #         state[i] = data.qpos[i+2]
-    #     for i in range(model.nv):
-    #         state[i+model.nq-2] = data.qvel[i]
-    #     print(state, state.shape)
-    #
-    #     action = np.zeros(shape=model.nu)
-    #     for i in range(model.nu):
-    #         action[i] = data.ctrl[i]
-    #     action = np.random.uniform(low=-1.0, high=1.0, size=model.nu)
-    #     for i in range(model.nu):
-    #         data.ctrl[i] = action[i]
-    #     print(action, action.shape)
+    print(f"State: {size}")
+    i: cython.Py_ssize_t
+    for i in range(size):
+        print(f"{state[i]}", end=", ")
+    print("")
 
+    free(state)
     mj_deleteData(data)
     mj_deleteModel(model)
+
 
 def some():
     some2("./env_xmls/ant.xml")
@@ -199,30 +165,30 @@ def some():
     # free(A)
     # free(L)
 
-    mu: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(2, cython.sizeof(cython.double)))
-    mu[0] = 1.0
-    mu[1] = 10.0
-
-    cov: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(2*2, cython.sizeof(cython.double)))
-    cov[0*2+0] = 0.9
-    cov[0*2+1] = 0.1
-    cov[1*2+0] = -0.1
-    cov[1*2+1] = 0.9
-
-    T: cython.pointer(gsl_rng_type) = gsl_rng_default
-    rng: cython.pointer(gsl_rng) = gsl_rng_alloc(T)
-    gsl_rng_set(rng, 6)
-
-    samples: cython.pointer(cython.double) = sample_multivariate_gaussian(100, mu, cov, 2, rng)
-
-    i: cython.Py_ssize_t
-    j: cython.Py_ssize_t
-    for i in range(100):
-        for j in range(2):
-            print(samples[i*2+j], end=", ")
-        print("")
-
-    free(samples)
-    gsl_rng_free(rng)
-    free(cov)
-    free(mu)
+    # mu: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(2, cython.sizeof(cython.double)))
+    # mu[0] = 1.0
+    # mu[1] = 10.0
+    #
+    # cov: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(2*2, cython.sizeof(cython.double)))
+    # cov[0*2+0] = 0.9
+    # cov[0*2+1] = 0.1
+    # cov[1*2+0] = -0.1
+    # cov[1*2+1] = 0.9
+    #
+    # T: cython.pointer(gsl_rng_type) = gsl_rng_default
+    # rng: cython.pointer(gsl_rng) = gsl_rng_alloc(T)
+    # gsl_rng_set(rng, 6)
+    #
+    # samples: cython.pointer(cython.double) = sample_multivariate_gaussian(100, mu, cov, 2, rng)
+    #
+    # i: cython.Py_ssize_t
+    # j: cython.Py_ssize_t
+    # for i in range(100):
+    #     for j in range(2):
+    #         print(samples[i*2+j], end=", ")
+    #     print("")
+    #
+    # free(samples)
+    # gsl_rng_free(rng)
+    # free(cov)
+    # free(mu)

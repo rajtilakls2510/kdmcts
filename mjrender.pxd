@@ -1,4 +1,4 @@
-cdef extern from "mjrender.h" nogil:
+cdef extern from "mujoco/mjrender.h" nogil:
     # Global constants
     enum: mjNAUX
     enum: mjMAXTEXTURE

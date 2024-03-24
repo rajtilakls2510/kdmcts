@@ -2,9 +2,9 @@
 
 import cython
 from cython.cimports.libc.stdlib import calloc, free
-from cython.cimports.mujoco import mj_loadXML, mjModel, mj_printModel, \
-    mjData, mj_makeData, mj_printData, mj_resetData, mj_step, mj_deleteData, \
-    mj_deleteModel, mj_copyData, mj_step1, mj_step2
+from cython.cimports.mujoco import mj_loadXML, mjModel, mjData, mj_makeData, \
+    mj_resetData, mj_step, mj_deleteData, mj_deleteModel, mj_copyData, mj_step1, \
+    mj_step2, mj_stateSize, mjSTATE_INTEGRATION, mj_getState, mj_setState, mjtNum
 from cython.cimports.gsl import CblasRowMajor, CblasNoTrans, CblasTrans, \
     cblas_dgemv, cblas_dscal, cblas_dcopy, cblas_ddot, gsl_rng, gsl_ran_gaussian, \
     gsl_ran_flat, gsl_rng_type, gsl_rng_default, gsl_rng_alloc, gsl_rng_set, gsl_rng_free
@@ -18,7 +18,7 @@ def create_env(env_id: cython.int, path: cython.pointer(cython.char), num_steps:
     err: cython.char[300]
     model: cython.pointer(mjModel) = mj_loadXML(path, cython.NULL, err, 300)
     data: cython.pointer(mjData) = mj_makeData(model)
-    env: MujocoEnv = MujocoEnv(env_id=env_id, model=model, data=data, state_size=0, action_size=0)
+    env: MujocoEnv = MujocoEnv(env_id=env_id, model=model, data=data)
     env.mj_state_size = get_mj_state_size(env)
     env.state_size = get_state_size(env)
     env.action_size = get_action_size(env)
@@ -39,91 +39,98 @@ def free_env(env: MujocoEnv) -> cython.void:
 @cython.nogil
 @cython.exceptval(check=False)
 def get_mj_state_size(env: MujocoEnv) -> cython.int:
-    return 1 + env.model.nq + env.model.nv + env.model.na + env.model.nv + env.model.nu + env.model.nv + env.model.nbody*6 + env.model.nv + env.model.na + env.model.nmocap * 7 + env.model.nsensordata + env.model.nuserdata
-
+    # return 1 + env.model.nq + env.model.nv + env.model.na + env.model.nv + env.model.nu + env.model.nv + env.model.nbody*6 + env.model.nv + env.model.na + env.model.nmocap * 7 + env.model.nsensordata + env.model.nuserdata
+    return mj_stateSize(env.model, mjSTATE_INTEGRATION)# + env.model.nv + env.model.na
 
 
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
-def get_mj_state(env: MujocoEnv) -> cython.pointer(cython.double):
+def get_mj_state(env: MujocoEnv) -> cython.pointer(mjtNum):
     mj_state: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.mj_state_size, cython.sizeof(cython.double)))
-    mj_state[0] = env.data.time
-    i: cython.Py_ssize_t
-    for i in range(env.model.nq):
-        mj_state[i + 1] = env.data.qpos[i]
-    for i in range(env.model.nv):
-        mj_state[i + env.model.nq + 1] = env.data.qvel[i]
-    for i in range(env.model.na):
-        mj_state[i + env.model.nv + env.model.nq + 1] = env.data.act[i]
-    for i in range(env.model.nv):
-        mj_state[i + env.model.na + env.model.nv + env.model.nq + 1] = env.data.qacc_warmstart[i]
-    for i in range(env.model.nu):
-        mj_state[i + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.ctrl[i]
-    for i in range(env.model.nv):
-        mj_state[i + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.qfrc_applied[i]
-    for i in range(env.model.nbody * 6):
-        mj_state[i + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.xfrc_applied[i]
-    for i in range(env.model.nv):
-        mj_state[i + env.model.nbody*6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.qacc[i]
-    for i in range(env.model.na):
-        mj_state[
-            i + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.act_dot[i]
-    for i in range(env.model.nmocap*3):
-        mj_state[
-            i + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.mocap_pos[i]
-    for i in range(env.model.nmocap * 4):
-        mj_state[
-            i + env.model.nmocap*3 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.mocap_quat[i]
-    for i in range(env.model.nsensordata):
-        mj_state[
-            i + env.model.nmocap * 7 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = \
-        env.data.sensordata[i]
-    for i in range(env.model.nuserdata):
-        mj_state[
-            i + env.model.nsensordata + env.model.nmocap * 7 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = \
-        env.data.userdata[i]
+    mj_getState(env.model, env.data, mj_state, mjSTATE_INTEGRATION)
+    # i: cython.Py_ssize_t
+    # for i in range(env.model.nv):
+    #     mj_state[]
+
+
+    # mj_state[0] = env.data.time
+    # i: cython.Py_ssize_t
+    # for i in range(env.model.nq):
+    #     mj_state[i + 1] = env.data.qpos[i]
+    # for i in range(env.model.nv):
+    #     mj_state[i + env.model.nq + 1] = env.data.qvel[i]
+    # for i in range(env.model.na):
+    #     mj_state[i + env.model.nv + env.model.nq + 1] = env.data.act[i]
+    # for i in range(env.model.nv):
+    #     mj_state[i + env.model.na + env.model.nv + env.model.nq + 1] = env.data.qacc_warmstart[i]
+    # for i in range(env.model.nu):
+    #     mj_state[i + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.ctrl[i]
+    # for i in range(env.model.nv):
+    #     mj_state[i + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.qfrc_applied[i]
+    # for i in range(env.model.nbody * 6):
+    #     mj_state[i + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.xfrc_applied[i]
+    # for i in range(env.model.nv):
+    #     mj_state[i + env.model.nbody*6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.qacc[i]
+    # for i in range(env.model.na):
+    #     mj_state[
+    #         i + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.act_dot[i]
+    # for i in range(env.model.nmocap*3):
+    #     mj_state[
+    #         i + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.mocap_pos[i]
+    # for i in range(env.model.nmocap * 4):
+    #     mj_state[
+    #         i + env.model.nmocap*3 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = env.data.mocap_quat[i]
+    # for i in range(env.model.nsensordata):
+    #     mj_state[
+    #         i + env.model.nmocap * 7 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = \
+    #     env.data.sensordata[i]
+    # for i in range(env.model.nuserdata):
+    #     mj_state[
+    #         i + env.model.nsensordata + env.model.nmocap * 7 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1] = \
+    #     env.data.userdata[i]
     return mj_state
 
 
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
-def set_mj_state(env: MujocoEnv, mj_state: cython.pointer(cython.double)) -> cython.void:
-    env.data.time = mj_state[0]
-    i: cython.Py_ssize_t
-    for i in range(env.model.nq):
-        env.data.qpos[i] = mj_state[i + 1]
-    for i in range(env.model.nv):
-        env.data.qvel[i] = mj_state[i + env.model.nq + 1]
-    for i in range(env.model.na):
-        env.data.act[i] = mj_state[i + env.model.nv + env.model.nq + 1]
-    for i in range(env.model.nv):
-        env.data.qacc_warmstart[i] = mj_state[i + env.model.na + env.model.nv + env.model.nq + 1]
-    for i in range(env.model.nu):
-        env.data.ctrl[i] = mj_state[i + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
-    for i in range(env.model.nv):
-        env.data.qfrc_applied[i] = mj_state[i + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
-    for i in range(env.model.nbody * 6):
-        env.data.xfrc_applied[i] = mj_state[i + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
-    for i in range(env.model.nv):
-        env.data.qacc[i] = mj_state[
-            i + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
-    for i in range(env.model.na):
-        env.data.act_dot[i] = mj_state[
-            i + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
-    for i in range(env.model.nmocap * 3):
-        env.data.mocap_pos[i] = mj_state[
-            i + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
-    for i in range(env.model.nmocap * 4):
-        env.data.mocap_quat[i] = mj_state[
-            i + env.model.nmocap * 3 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
-    for i in range(env.model.nsensordata):
-        env.data.sensordata[i] = mj_state[
-            i + env.model.nmocap * 7 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
-    for i in range(env.model.nuserdata):
-        env.data.userdata[i] = mj_state[
-            i + env.model.nsensordata + env.model.nmocap * 7 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
+def set_mj_state(env: MujocoEnv, mj_state: cython.pointer(mjtNum)) -> cython.void:
+    mj_setState(env.model, env.data, mj_state, mjSTATE_INTEGRATION)
+    # env.data.time = mj_state[0]
+    # i: cython.Py_ssize_t
+    # for i in range(env.model.nq):
+    #     env.data.qpos[i] = mj_state[i + 1]
+    # for i in range(env.model.nv):
+    #     env.data.qvel[i] = mj_state[i + env.model.nq + 1]
+    # for i in range(env.model.na):
+    #     env.data.act[i] = mj_state[i + env.model.nv + env.model.nq + 1]
+    # for i in range(env.model.nv):
+    #     env.data.qacc_warmstart[i] = mj_state[i + env.model.na + env.model.nv + env.model.nq + 1]
+    # for i in range(env.model.nu):
+    #     env.data.ctrl[i] = mj_state[i + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
+    # for i in range(env.model.nv):
+    #     env.data.qfrc_applied[i] = mj_state[i + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
+    # for i in range(env.model.nbody * 6):
+    #     env.data.xfrc_applied[i] = mj_state[i + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
+    # for i in range(env.model.nv):
+    #     env.data.qacc[i] = mj_state[
+    #         i + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
+    # for i in range(env.model.na):
+    #     env.data.act_dot[i] = mj_state[
+    #         i + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
+    # for i in range(env.model.nmocap * 3):
+    #     env.data.mocap_pos[i] = mj_state[
+    #         i + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
+    # for i in range(env.model.nmocap * 4):
+    #     env.data.mocap_quat[i] = mj_state[
+    #         i + env.model.nmocap * 3 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
+    # for i in range(env.model.nsensordata):
+    #     env.data.sensordata[i] = mj_state[
+    #         i + env.model.nmocap * 7 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
+    # for i in range(env.model.nuserdata):
+    #     env.data.userdata[i] = mj_state[
+    #         i + env.model.nsensordata + env.model.nmocap * 7 + env.model.na + env.model.nv + env.model.nbody * 6 + env.model.nv + env.model.nu + env.model.nv + env.model.na + env.model.nv + env.model.nq + 1]
 
 
 @cython.cfunc
@@ -385,7 +392,7 @@ class MujocoPyEnv:
 def driver(env_name, weightT, bias):
     env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5, "max_steps": 5000}}
     env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"], env_dict[env_name]["step_skip"], env_dict[env_name]["max_steps"])
-    print(env.env_id, env.state_size, env.action_size, env.mj_state_size)
+    print(weightT.shape, env.env_id, env.state_size, env.action_size, env.mj_state_size)
 
     w: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(weightT.shape[0] * weightT.shape[1], cython.sizeof(cython.double)))
     b: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(weightT.shape[1], cython.sizeof(cython.double)))
@@ -420,6 +427,12 @@ def driver(env_name, weightT, bias):
         for i in range(env.state_size):
             print(state[i], end=", ")
         print("")
+        print("env mj state:")
+        mj_state: cython.pointer(cython.double) = get_mj_state(env)
+        for j in range(env.mj_state_size):
+            print(f"{mj_state[j]}", end=", ")
+        print("")
+        free(mj_state)
         action: cython.pointer(cython.double) = policy(params, state, env)
         print("Action: ")
         for i in range(env.action_size):

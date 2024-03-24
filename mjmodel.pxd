@@ -76,7 +76,7 @@ cdef struct mjVisual_rgba:      # color of decor elements
     float slidercrank[4]        # slidercrank
     float crankbroken[4]        # used when crank must be stretched/broken
 
-cdef extern from "mjmodel.h" nogil:
+cdef extern from "mujoco/mjmodel.h" nogil:
     # ---------------------------- floating-point definitions -------------------------------
     ctypedef double mjtNum
 
@@ -500,7 +500,7 @@ cdef extern from "mjmodel.h" nogil:
         int nemax                       # number of potential equality-constraint rows
         int njmax                       # number of available rows in constraint Jacobian
         int nconmax                     # number of potential contacts in contact list
-        int nstack                      # number of fields in mjData stack
+        int narena                      # number of fields in mjData stack
         int nuserdata                   # number of extra fields in mjData
         int nsensordata                 # number of fields in sensor data vector
 

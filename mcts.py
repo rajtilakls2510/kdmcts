@@ -13,7 +13,7 @@ from cython.cimports.gsl import gsl_rng_uniform, gsl_rng_type, gsl_rng_default, 
     gsl_rng_alloc, gsl_rng_set, gsl_rng, gsl_rng_free, gsl_ran_flat, gsl_ran_gaussian
 from cython.cimports.gsl import cblas_dgemm, CblasRowMajor, CblasNoTrans, CblasTrans, cblas_daxpy, \
     cblas_ddot, cblas_dcopy, cblas_dscal, cblas_dger
-from cython.cimports.mujoco import mjData, mj_copyData, mj_deleteData, mj_forward, mjModel
+from cython.cimports.mujoco import mjData, mj_copyData, mj_deleteData, mj_forward, mjModel, mjtNum
 import time
 
 
@@ -181,7 +181,7 @@ def mkd_selection(node: cython.pointer(MKDNode), move_indices: cython.pointer(cy
         for i in range(node.num_kernels):
             total_times += node.n[i]
         for i in range(node.num_kernels):
-            scratch[i] = node.pi[i] + sqrt(log(total_times) / node.n[i])
+            scratch[i] = node.pi[i] + sqrt(total_times / node.n[i])
         max: cython.double = scratch[0]
         for i in range(node.num_kernels):
             if max < scratch[i]:
@@ -230,10 +230,11 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
                         i * env.action_size * env.action_size + j * env.action_size + j] = node.init_cov
 
             # Perform one rollout per kernel to initialize w and n values
-            original_data: cython.pointer(mjData) = env.data
+            # original_data: cython.pointer(mjData) = env.data
+            # env.data = mj_copyData(cython.NULL, env.model, original_data)
+            original_state: cython.pointer(mjtNum) = get_mj_state(env)
             for i in range(node.num_kernels):
                 # Take an action and get next step
-                env.data = mj_copyData(cython.NULL, env.model, original_data)
 
                 set_mj_state(env, node.mj_state)    # Resetting the controller to node
                 r: cython.double = step(env, cython.address(node.mu[i * env.action_size]))
@@ -241,8 +242,10 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
                 # Rollout from this next state
                 node.w[i] = r + mkd_rollout(node.current_step + 1, env, rollout_params, rng)
                 node.n[i] += 1
-                mj_deleteData(env.data)
-            env.data = original_data
+            # mj_deleteData(env.data)
+            # env.data = original_data
+            set_mj_state(env, original_state)
+            free(original_state)
         else:
             node.expanded = True
 
@@ -251,18 +254,21 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
         if node.iterations_left == 0:
             node.children = cython.cast(cython.pointer(cython.pointer(MKDNode)),
                                         calloc(node.num_kernels, cython.sizeof(cython.pointer(MKDNode))))
-            original_data: cython.pointer(mjData) = env.data
+            # original_data: cython.pointer(mjData) = env.data
+            # env.data = mj_copyData(cython.NULL, env.model, original_data)
+            original_state: cython.pointer(mjtNum) = get_mj_state(env)
             i: cython.Py_ssize_t
             for i in range(node.num_kernels):
-                env.data = mj_copyData(cython.NULL, env.model, original_data)
                 set_mj_state(env, node.mj_state)    # Resetting the controller to node
                 r: cython.double = step(env, cython.address(node.mu[cython.cast(cython.int, i) * env.action_size]))
 
                 node.children[i] = mkd_create_tree_node(env, node.current_step + 1, node, r,
                                                         is_terminated(env, node.current_step + 1), node.num_kernels,
                                                         env.action_size, node.max_iterations, node.init_cov)
-                mj_deleteData(env.data)
-            env.data = original_data  # Don't need to restore the original value because env is not a pointer but it is a good practice
+            # mj_deleteData(env.data)
+            # env.data = original_data  # Don't need to restore the original value because env is not a pointer but it is a good practice
+            set_mj_state(env, original_state)
+            free(original_state)
             node.expanded = True
         else:
             # Else, increase visitation count
@@ -333,7 +339,7 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
                move_indices: cython.pointer(cython.int),
                move_last: cython.pointer(cython.int), env: MujocoEnv) -> cython.int:
     depth: cython.int = move_last[0]
-    if not node.terminal:
+    if not node.terminal and not node.expanded:
         omp_set_lock(cython.address(node.access_lock))
         # # Kernel of the action
         kmu: cython.pointer(cython.double) = action
@@ -542,9 +548,10 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
     # with cython.gil:
     #     print(f"Starting: {j}")
     # Saving the original state of the environment and will be restored later. The MCTS routines change env.data to reset state to an arbitrary timestep
-    # original_data: cython.pointer(mjData) = env.data
-    # env.data = mj_copyData(cython.NULL, env.model, original_data)
 
+    original_data: cython.pointer(mjData) = env.data
+    env.data = mj_copyData(cython.NULL, env.model, original_data)
+    # env.data = data
     # print("Job: Selection")
     # Initializing a Random Number Generator
     T: cython.pointer(gsl_rng_type) = gsl_rng_default
@@ -563,8 +570,9 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
     # print("Job: Rollout")
     # Sample action according to current node params and begin rollout from next state
     if not node.terminal:
-        original_data: cython.pointer(mjData) = env.data
-        env.data = mj_copyData(cython.NULL, env.model, env.data)
+        # original_data: cython.pointer(mjData) = env.data
+        # env.data = mj_copyData(cython.NULL, env.model, env.data)
+        original_state: cython.pointer(mjtNum) = get_mj_state(env)
         set_mj_state(env, node.mj_state)    # Resetting the controller to node
         chosen_kernel: cython.int = 0
         sum: cython.double = 0.0
@@ -585,8 +593,10 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
 
         r: cython.double = step(env, action)
         rtn: cython.double = r + mkd_rollout(node.current_step + 1, env, rollout_params, rng)
-        mj_deleteData(env.data)
-        env.data = original_data
+        # mj_deleteData(env.data)
+        # env.data = original_data
+        set_mj_state(env, original_state)
+        free(original_state)
     else:
         rtn: cython.double = 0
         action: cython.pointer(cython.double) = cython.NULL
@@ -600,7 +610,7 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
     # Free allocated memory
     free(move_indices)
     gsl_rng_free(rng)
-    # mj_deleteData(env.data)
+    mj_deleteData(env.data)
     # env.data = original_data  # Don't need to restore the original data because env is not a pointer but it is a good practice
     # mj_forward(env.model, env.data)
     return depth
@@ -612,12 +622,16 @@ def mkd_mcts(num_simulations: cython.int, root: cython.pointer(MKDNode), max_dep
     i: cython.Py_ssize_t
     depths: cython.pointer(cython.int) = cython.cast(cython.pointer(cython.int),
                                                      calloc(num_simulations, cython.sizeof(cython.int)))
+    # datas: cython.pointer(cython.pointer(mjData)) = cython.cast(cython.pointer(cython.pointer(mjData)), calloc(num_simulations, cython.sizeof(cython.pointer(mjData))))
+    # for i in range(num_simulations):
+    #     datas[i] = mj_copyData(cython.NULL, env.model, env.data)
     for i in prange(num_simulations, nogil=True):
         # print(f"Sim: {i}")
         depths[i] = mkd_mcts_job(i, root, max_depth, env, rollout_params)
         # print(f"Depth: {depths[i]}")
     max_depth: cython.int = 0
     for i in range(num_simulations):
+        # mj_deleteData(datas[i])
         if depths[i] > max_depth:
             max_depth = depths[i]
     free(depths)

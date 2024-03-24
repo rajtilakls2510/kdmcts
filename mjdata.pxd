@@ -1,4 +1,4 @@
-cdef extern from "mjdata.h" nogil:
+cdef extern from "mujoco/mjdata.h" nogil:
 
     #---------------------------- primitive types (mjt) ------------------------------------
 

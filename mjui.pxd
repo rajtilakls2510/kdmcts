@@ -1,4 +1,4 @@
-cdef extern from "mjui.h" nogil:
+cdef extern from "mujoco/mjui.h" nogil:
     # Global constants
     enum: mjMAXUISECT
     enum: mjMAXUIITEM

@@ -1035,3 +1035,6 @@ cdef extern from "mujoco/mujoco.h" nogil:
 
     # Set state.
     void mj_setState(const mjModel* m, mjData* d, const mjtNum* state, unsigned int spec)
+
+    # Get name of object with the specified mjtObj type and id, returns NULL if name not found.
+    const char* mj_id2name(const mjModel* m, int type, int id)

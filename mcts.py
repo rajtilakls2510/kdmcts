@@ -100,7 +100,7 @@ def softmax(a: cython.pointer(cython.double), size: cython.Py_ssize_t) -> cython
 def mkd_create_tree_node(env: MujocoEnv, current_step: cython.int,
                          parent: cython.pointer(MKDNode), parent_reward: cython.double, terminal: cython.bint,
                          num_kernels: cython.int,
-                         action_dim: cython.int, max_iterations: cython.int, init_cov: cython.double) -> cython.pointer(
+                         action_dim: cython.int, max_iterations: cython.int, init_cov: cython.double, kernel_cov: cython.double) -> cython.pointer(
     MKDNode):
     node: cython.pointer(MKDNode) = cython.cast(cython.pointer(MKDNode), calloc(1, cython.sizeof(MKDNode)))
     node.mj_state = get_mj_state(env)
@@ -115,6 +115,7 @@ def mkd_create_tree_node(env: MujocoEnv, current_step: cython.int,
     node.iterations_left = max_iterations
     node.max_iterations = max_iterations
     node.init_cov = init_cov
+    node.kernel_cov = kernel_cov
     if not terminal:
         node.pi = cython.cast(cython.pointer(cython.double), calloc(num_kernels, cython.sizeof(cython.double)))
         i: cython.Py_ssize_t
@@ -230,22 +231,23 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
                         i * env.action_size * env.action_size + j * env.action_size + j] = node.init_cov
 
             # Perform one rollout per kernel to initialize w and n values
-            # original_data: cython.pointer(mjData) = env.data
-            # env.data = mj_copyData(cython.NULL, env.model, original_data)
-            original_state: cython.pointer(mjtNum) = get_mj_state(env)
+            original_data: cython.pointer(mjData) = env.data
+            # original_state: cython.pointer(mjtNum) = get_mj_state(env)
             for i in range(node.num_kernels):
                 # Take an action and get next step
+                env.data = mj_copyData(cython.NULL, env.model, original_data)
 
                 set_mj_state(env, node.mj_state)    # Resetting the controller to node
                 r: cython.double = step(env, cython.address(node.mu[i * env.action_size]))
 
                 # Rollout from this next state
-                node.w[i] = r + mkd_rollout(node.current_step + 1, env, rollout_params, rng)
+                rtn: cython.double = r + mkd_rollout(node.current_step + 1, env, rollout_params, rng)
+                node.w[i] = rtn
                 node.n[i] += 1
-            # mj_deleteData(env.data)
-            # env.data = original_data
-            set_mj_state(env, original_state)
-            free(original_state)
+                mj_deleteData(env.data)
+            env.data = original_data
+            # set_mj_state(env, original_state)
+            # free(original_state)
         else:
             node.expanded = True
 
@@ -254,21 +256,21 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
         if node.iterations_left == 0:
             node.children = cython.cast(cython.pointer(cython.pointer(MKDNode)),
                                         calloc(node.num_kernels, cython.sizeof(cython.pointer(MKDNode))))
-            # original_data: cython.pointer(mjData) = env.data
-            # env.data = mj_copyData(cython.NULL, env.model, original_data)
-            original_state: cython.pointer(mjtNum) = get_mj_state(env)
+            original_data: cython.pointer(mjData) = env.data
+            # original_state: cython.pointer(mjtNum) = get_mj_state(env)
             i: cython.Py_ssize_t
             for i in range(node.num_kernels):
+                env.data = mj_copyData(cython.NULL, env.model, original_data)
                 set_mj_state(env, node.mj_state)    # Resetting the controller to node
                 r: cython.double = step(env, cython.address(node.mu[cython.cast(cython.int, i) * env.action_size]))
 
                 node.children[i] = mkd_create_tree_node(env, node.current_step + 1, node, r,
                                                         is_terminated(env, node.current_step + 1), node.num_kernels,
-                                                        env.action_size, node.max_iterations, node.init_cov)
-            # mj_deleteData(env.data)
-            # env.data = original_data  # Don't need to restore the original value because env is not a pointer but it is a good practice
-            set_mj_state(env, original_state)
-            free(original_state)
+                                                        env.action_size, node.max_iterations, node.init_cov, node.kernel_cov)
+                mj_deleteData(env.data)
+            env.data = original_data  # Don't need to restore the original value because env is not a pointer but it is a good practice
+            # set_mj_state(env, original_state)
+            # free(original_state)
             node.expanded = True
         else:
             # Else, increase visitation count
@@ -310,11 +312,14 @@ def mkd_rollout(steps_taken: cython.int, env: MujocoEnv,
     # Rollout till the end of the episode
     while (steps * env.num_steps < env.max_steps) and (not is_terminated(env, steps)):
         # Select actions according to rollout policy
-        action: cython.pointer(cython.double) = policy(rollout_params, state, env)
+        action: cython.pointer(cython.double) = policy(rollout_params, state)
         i: cython.Py_ssize_t
         for i in range(env.action_size):
             action[i] += gsl_ran_gaussian(rng, 0.1)  # Adding Exploration Noise
-
+            if action[i] < -1.0:
+                action[i] = -1.0
+            elif action[i] > 1.0:
+                action[i] = 1.0
         # # Random Policy
         # action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
         # i: cython.Py_ssize_t
@@ -341,14 +346,14 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
     depth: cython.int = move_last[0]
     if not node.terminal and not node.expanded:
         omp_set_lock(cython.address(node.access_lock))
-        # # Kernel of the action
+        # Kernel of the action
         kmu: cython.pointer(cython.double) = action
         kcov: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
                                                           calloc(env.action_size * env.action_size,
                                                                  cython.sizeof(cython.double)))
         i: cython.Py_ssize_t
         for i in range(env.action_size):
-            kcov[i * env.action_size + i] = 0.005  # TODO: Make it a hyper-parameter
+            kcov[i * env.action_size + i] = node.kernel_cov
         # print("Backup: Kernel Finding")
         # Finding the ideal kernel to merge with using Euclidean distance
         scratch: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
@@ -457,6 +462,13 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
 
         cblas_dcopy(env.action_size, scratch, 1, cython.address(node.mu[min_kernel_index * env.action_size]),
                     1)  # node.mu[min_kernel] = scratch
+        # clip(node.mu[min_kernel], 1.0)
+        for i in range(env.action_size):
+            if node.mu[min_kernel_index * env.action_size + i] < -1.0:
+                node.mu[min_kernel_index * env.action_size + i] = -1.0
+            elif node.mu[min_kernel_index * env.action_size + i] > 1.0:
+                node.mu[min_kernel_index * env.action_size + i] = 1.0
+
         # print("node.mu[min_kernel]")
         # for i in range(env.action_size):
         #     print(f"{node.mu[min_kernel_index * env.action_size + i]}", end=", ")
@@ -590,6 +602,11 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
                                                                              cython.address(node.cov[
                                                                                                 chosen_kernel * env.action_size * env.action_size]),
                                                                              env.action_size, rng)
+        for i in range(env.action_size):
+            if action[i] < -1.0:
+                action[i] = -1.0
+            elif action[i] > 1.0:
+                action[i] = 1.0
 
         r: cython.double = step(env, action)
         rtn: cython.double = r + mkd_rollout(node.current_step + 1, env, rollout_params, rng)
@@ -677,34 +694,38 @@ def driver(env_name, weightT, bias):
     params: PolicyParams = PolicyParams(k=env.action_size, n=env.state_size, w=w, b=b)
     T: cython.pointer(gsl_rng_type) = gsl_rng_default
     rng: cython.pointer(gsl_rng) = gsl_rng_alloc(T)
-    gsl_rng_set(rng, 6)
+    gsl_rng_set(rng, 2)
     reset_env(env, rng)
 
     i = 0
-    root: cython.pointer(MKDNode) = mkd_create_tree_node(env, i, cython.NULL, 0, False, 10,
-                                                         env.action_size, 100, 3.0)
+    num_kernels: cython.int = 10
+    num_visitations: cython.int = 1000
+    init_cov: cython.double = 1.0
+    kernel_cov: cython.double = 0.1
+    root: cython.pointer(MKDNode) = mkd_create_tree_node(env, i, cython.NULL, 0, False, num_kernels,
+                                                         env.action_size, num_visitations, init_cov, kernel_cov)
     total_reward: cython.double = 0.0
-    print("env mj state:")
-    state: cython.pointer(cython.double) = get_mj_state(env)
-    for j in range(env.mj_state_size):
-        print(f"{state[j]}", end=", ")
-    print("")
-    print("node mj state:")
-    state: cython.pointer(cython.double) = root.mj_state
-    for j in range(env.mj_state_size):
-        print(f"{state[j]}", end=", ")
-    print("")
+    # print("env mj state:")
+    # state: cython.pointer(cython.double) = get_mj_state(env)
+    # for j in range(env.mj_state_size):
+    #     print(f"{state[j]}", end=", ")
+    # print("")
+    # print("node mj state:")
+    # state: cython.pointer(cython.double) = root.mj_state
+    # for j in range(env.mj_state_size):
+    #     print(f"{state[j]}", end=", ")
+    # print("")
 
     while not is_terminated(env, i):
         print(f"Step: {i}")
         start = time.perf_counter_ns()
-        print("Depth:", mkd_mcts(1000, root, 100, env, params))
+        print("Depth:", mkd_mcts(10000, root, 100, env, params))
         end = time.perf_counter_ns()
         print(f"Time: {(end - start) / 1e6} ms")
         j: cython.Py_ssize_t
         print("W:")
         for j in range(root.num_kernels):
-            print(f"{root.w[j]}, ", end="")
+            print(f"{round(root.w[j], 3)}, ", end="")
         print("")
         print("N:")
         for j in range(root.num_kernels):
@@ -712,7 +733,7 @@ def driver(env_name, weightT, bias):
         print("")
         print("P:")
         for j in range(root.num_kernels):
-            print(f"{root.pi[j]}, ", end="")
+            print(f"{round(root.pi[j], 3)}, ", end="")
         print("")
         max: cython.double = root.w[0]
         selected_kernel: cython.Py_ssize_t = 0
@@ -723,7 +744,7 @@ def driver(env_name, weightT, bias):
         print(f"Selected Kernel: {selected_kernel}")
         print("Action: ")
         for j in range(env.action_size):
-            print(f"{root.mu[cython.cast(cython.int, selected_kernel) * env.action_size + j]}", end=", ")
+            print(f"{round(root.mu[cython.cast(cython.int, selected_kernel) * env.action_size + j], 3)}", end=", ")
         print("")
 
         total_reward += step(env, cython.address(root.mu[cython.cast(cython.int, selected_kernel) * env.action_size]))
@@ -734,34 +755,44 @@ def driver(env_name, weightT, bias):
         root.children[selected_kernel] = cython.NULL
         mkd_free_tree_node(root)
         root = node
-        print("env mj state:")
-        state: cython.pointer(cython.double) = get_mj_state(env)
-        for j in range(env.mj_state_size):
-            print(f"{state[j]}", end=", ")
-        print("")
-        print("node mj state:")
-        state: cython.pointer(cython.double) = root.mj_state
-        for j in range(env.mj_state_size):
-            print(f"{state[j]}", end=", ")
+        # print("env mj state:")
+        # state: cython.pointer(cython.double) = get_mj_state(env)
+        # for j in range(env.mj_state_size):
+        #     print(f"{state[j]}", end=", ")
+        # print("")
+        # print("node mj state:")
+        # state: cython.pointer(cython.double) = root.mj_state
+        # for j in range(env.mj_state_size):
+        #     print(f"{state[j]}", end=", ")
+        # print("")
+        state: cython.pointer(cython.double) = get_state(env)
+        print("State:")
+        for j in range(env.state_size):
+            print(f"{round(state[j], 3)}", end=", ")
         print("")
         print(f"Reward Collected: {total_reward}")
 
-        if (i+1)%10 == 0:
-            original_data: cython.pointer(mjData) = env.data
-            state: cython.pointer(cython.double) = get_state(env)
-            action: cython.pointer(cython.double) = policy(params, state, env)
-            for j in range(5):
-                env.data = mj_copyData(cython.NULL, env.model, original_data)
-                reward: cython.double = step(env, action)
-                next_state: cython.pointer(cython.double) = get_state(env)
-                print(f"State: {j} Reward: {reward}")
-                k: cython.Py_ssize_t
-                for k in range(env.state_size):
-                    print(f"{next_state[k]}", end=", ")
-                print("")
-
-                mj_deleteData(env.data)
-            env.data = original_data
+        # if (i+1)%10 == 0:
+        #     original_data: cython.pointer(mjData) = env.data
+        action: cython.pointer(cython.double) = policy(params, state)
+        free(state)
+        print("Policy Action:")
+        for j in range(env.action_size):
+            print(f"{action[j]}", end=", ")
+        print("")
+        free(action)
+        # for j in range(5):
+        #     env.data = mj_copyData(cython.NULL, env.model, original_data)
+        #     reward: cython.double = step(env, action)
+        #     next_state: cython.pointer(cython.double) = get_state(env)
+        #     print(f"State: {j} Reward: {reward}")
+        #     k: cython.Py_ssize_t
+        #     for k in range(env.state_size):
+        #         print(f"{next_state[k]}", end=", ")
+        #     print("")
+        #
+        #         mj_deleteData(env.data)
+        #     env.data = original_data
 
 
         i += 1

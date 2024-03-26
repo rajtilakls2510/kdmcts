@@ -4,11 +4,12 @@ import cython
 from cython.cimports.libc.stdlib import calloc, free
 from cython.cimports.mujoco import mj_loadXML, mjModel, mjData, mj_makeData, \
     mj_resetData, mj_step, mj_deleteData, mj_deleteModel, mj_copyData, mj_step1, \
-    mj_step2, mj_stateSize, mjSTATE_INTEGRATION, mj_getState, mj_setState, mjtNum
+    mj_step2, mj_stateSize, mjSTATE_INTEGRATION, mj_getState, mj_setState, mjtNum, \
+    mj_id2name
 from cython.cimports.gsl import CblasRowMajor, CblasNoTrans, CblasTrans, \
     cblas_dgemv, cblas_dscal, cblas_dcopy, cblas_ddot, gsl_rng, gsl_ran_gaussian, \
     gsl_ran_flat, gsl_rng_type, gsl_rng_default, gsl_rng_alloc, gsl_rng_set, gsl_rng_free
-from cython.cimports.libc.math import exp, isfinite
+from cython.cimports.libc.math import exp, isfinite, isnan
 import time
 
 @cython.cfunc
@@ -221,7 +222,7 @@ def is_terminated(env: MujocoEnv, steps_taken: cython.int) -> cython.bint:
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
-def policy(params: PolicyParams, state: cython.pointer(cython.double), env: MujocoEnv) -> cython.pointer(cython.double):
+def policy(params: PolicyParams, state: cython.pointer(cython.double)) -> cython.pointer(cython.double):
     action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(params.k, cython.sizeof(cython.double)))
 
     # action = b
@@ -233,7 +234,7 @@ def policy(params: PolicyParams, state: cython.pointer(cython.double), env: Mujo
     cblas_dgemv(CblasRowMajor, CblasNoTrans, params.k, params.n, 1.0, params.w, params.n, state, 1, 1.0, action, 1)
 
     # action = Tanh(action)
-    cblas_dscal(env.action_size, 2.0, action, 1) # action = 2 * action
+    cblas_dscal(params.k, 2.0, action, 1) # action = 2 * action
     scratch: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(params.k, cython.sizeof(cython.double)))
     cblas_dcopy(params.k, action, 1, scratch, 1) # scratch = action
     for i in range(params.k):
@@ -329,7 +330,7 @@ def ant_is_healthy(env: MujocoEnv) -> cython.bint:
         healthy = healthy and isfinite(env.data.qpos[i])
     for i in range(env.model.nv):
         healthy = healthy and isfinite(env.data.qvel[i])
-    return (0.2 <= env.data.qpos[2] <= 1.0) or healthy
+    return (0.2 <= env.data.qpos[2] <= 1.0) and healthy
 
 @cython.cfunc
 @cython.nogil
@@ -342,16 +343,20 @@ def ant_is_terminated(env: MujocoEnv, steps_taken: cython.int) -> cython.bint:
 @cython.nogil
 @cython.exceptval(check=False)
 def ant_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.double:
-    i: cython.Py_ssize_t
-    for i in range(env.action_size):
-        if action[i] < -1.0:
-            action[i] = -1.0
-        elif action[i] > 1.0:
-            action[i] = 1.0
-    mj_step1(env.model, env.data)
-    set_action(env, action)
     body_n: cython.int = 1 # TORSO
     previous_x: cython.double = env.data.xpos[body_n * 3 + 0]
+    i: cython.Py_ssize_t
+    action_aux: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+    for i in range(env.action_size):
+        if action[i] < -1.0:
+            action_aux[i] = -1.0
+        elif action[i] > 1.0:
+            action_aux[i] = 1.0
+        else:
+            action_aux[i] = action[i]
+    mj_step1(env.model, env.data)
+    set_action(env, action_aux)
+
     mj_step2(env.model, env.data)
     perform_steps(env, env.num_steps-1)
 
@@ -359,12 +364,15 @@ def ant_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.do
     xvel: cython.double = (new_x - previous_x) / (env.model.opt.timestep * env.num_steps)
 
     ctrl_cost_weight: cython.double = 0.5
-    ctrl_cost: cython.double = ctrl_cost_weight * cblas_ddot(env.action_size, action, 1, action, 1) # np.sum(action ** 2)
+    ctrl_cost: cython.double = ctrl_cost_weight * cblas_ddot(env.action_size, action_aux, 1, action_aux, 1) # np.sum(action ** 2)
 
     healthy_reward: cython.double = 1.0
     healthy_reward = healthy_reward * ant_is_healthy(env)
 
     reward: cython.double = xvel + healthy_reward - ctrl_cost
+    free(action_aux)
+    if isnan(reward):
+        reward = 0.0
     return reward
 
 
@@ -417,7 +425,7 @@ def driver(env_name, weightT, bias):
     params: PolicyParams = PolicyParams(k=weightT.shape[1], n=weightT.shape[0], w=w, b=b)
     T: cython.pointer(gsl_rng_type) = gsl_rng_default
     rng: cython.pointer(gsl_rng) = gsl_rng_alloc(T)
-    gsl_rng_set(rng, 6)
+    gsl_rng_set(rng, 3)
     reset_env(env, rng)
     total_reward: cython.double = 0.0
     start = time.perf_counter_ns()
@@ -433,7 +441,7 @@ def driver(env_name, weightT, bias):
             print(f"{mj_state[j]}", end=", ")
         print("")
         free(mj_state)
-        action: cython.pointer(cython.double) = policy(params, state, env)
+        action: cython.pointer(cython.double) = policy(params, state)
         print("Action: ")
         for i in range(env.action_size):
             print(action[i], end=", ")

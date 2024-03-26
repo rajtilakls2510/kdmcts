@@ -19,6 +19,7 @@ cdef struct MKDNode:
     int iterations_left
     int max_iterations
     double init_cov
+    double kernel_cov
     bint expanded
     MKDNode** children   # (num_kernels, )
 

@@ -32,7 +32,7 @@ cdef struct PolicyParams:
     double* w
     double* b
 
-cdef double* policy(PolicyParams params, double* state, MujocoEnv env) noexcept nogil
+cdef double* policy(PolicyParams params, double* state) noexcept nogil
 
 cdef class MujocoPyEnv:
     cdef MujocoEnv env_struct

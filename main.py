@@ -24,7 +24,7 @@ def print_hi(name):
     # new_action = tanh(state @ w + b)
     # print(new_action)
 
-    mcts.driver("ant", *model.get_weights())
+    mcts.driver_simple_rollout("ant", *model.get_weights())
 
 if __name__ == '__main__':
     print_hi('PyCharm')

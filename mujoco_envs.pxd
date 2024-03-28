@@ -19,7 +19,7 @@ cdef int get_action_size(MujocoEnv env) noexcept nogil
 cdef mjtNum* get_mj_state(MujocoEnv env) noexcept nogil
 cdef void set_mj_state(MujocoEnv env, mjtNum* mj_state) noexcept nogil
 cdef double* get_state(MujocoEnv env) noexcept nogil
-cdef void set_state(MujocoEnv env, double* state) noexcept nogil
+#cdef void set_state(MujocoEnv env, double* state) noexcept nogil
 cdef double* get_action(MujocoEnv env) noexcept nogil
 cdef void set_action(MujocoEnv env, double* action) noexcept nogil
 cdef void reset_env(MujocoEnv env, gsl_rng* rng) noexcept nogil

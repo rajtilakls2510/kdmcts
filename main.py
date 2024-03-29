@@ -15,7 +15,7 @@ def tanh(a):
 
 def print_hi(name):
     # something.some()
-    model = tf.keras.models.load_model("actor_network")
+    model = tf.keras.models.load_model("ant_network")
 
     # state = tf.random.uniform(minval=0, maxval=1.0, shape=(4,27))
     # action = model(state)
@@ -24,7 +24,7 @@ def print_hi(name):
     # new_action = tanh(state @ w + b)
     # print(new_action)
 
-    mcts.driver_simple_rollout("reacher", *model.get_weights())
+    mcts.driver("ant", *model.get_weights())
     # mujoco_envs.driver("reacher", *model.get_weights())
 
 if __name__ == '__main__':

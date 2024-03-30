@@ -121,6 +121,8 @@ def mkd_create_tree_node(env: MujocoEnv, current_step: cython.int,
     node.max_iterations = max_iterations
     node.init_cov = init_cov
     node.kernel_cov = kernel_cov
+    node.mean_w = 0.0
+    node.std_w = 1.0
     if not terminal:
         node.pi = cython.cast(cython.pointer(cython.double), calloc(num_kernels, cython.sizeof(cython.double)))
         i: cython.Py_ssize_t
@@ -187,7 +189,7 @@ def mkd_selection(node: cython.pointer(MKDNode), move_indices: cython.pointer(cy
         for i in range(node.num_kernels):
             total_times += node.n[i]
         for i in range(node.num_kernels):
-            scratch[i] = node.pi[i] + sqrt(log(total_times) / node.n[i])
+            scratch[i] = (node.w[i] - node.mean_w) / node.std_w + 100 * node.pi[i] * sqrt(total_times) / (1 + node.n[i])
         max: cython.double = scratch[0]
         for i in range(node.num_kernels):
             if max < scratch[i]:
@@ -261,6 +263,8 @@ def mkd_expand_node(node: cython.pointer(MKDNode), env: MujocoEnv, rollout_param
             for i in range(node.num_kernels):
                 env.data = mj_copyData(cython.NULL, env.model, original_data)
                 set_mj_state(env, node.mj_state)    # Resetting the controller to node
+                node.w[i] = gsl_ran_gaussian(rng, 1.0)   # Resetting Statistics for UCT
+                node.n[i] = 0
                 r: cython.double = step(env, cython.address(node.mu[cython.cast(cython.int, i) * env.action_size]))
 
                 node.children[i] = mkd_create_tree_node(env, node.current_step + 1, node, r,
@@ -339,11 +343,13 @@ def mkd_rollout(steps_taken: cython.int, env: MujocoEnv,
 @cython.nogil
 @cython.exceptval(check=False)
 def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.double), rtn: cython.double,
+               bckup_rtn: cython.double,
                move_indices: cython.pointer(cython.int),
                move_last: cython.pointer(cython.int), env: MujocoEnv) -> cython.int:
     depth: cython.int = move_last[0]
+    omp_set_lock(cython.address(node.access_lock))
     if not node.terminal and not node.expanded:
-        omp_set_lock(cython.address(node.access_lock))
+
         # Kernel of the action
         kmu: cython.pointer(cython.double) = action
         kcov: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
@@ -468,9 +474,10 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
         free(scratch)
         free(kmu)
         free(kcov)
-        omp_unset_lock(cython.address(node.access_lock))
+    omp_unset_lock(cython.address(node.access_lock))
 
     # Update parent node statistics
+    rtn = bckup_rtn
     rtn += node.parent_reward
     node = node.parent
     while move_last[0] > 0:
@@ -491,10 +498,13 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
         std: cython.double = sqrt(cblas_ddot(node.num_kernels, scratch2, 1, scratch2,
                                         1) / node.num_kernels)  # std = sqrt(dot(scratch2, scratch2) / node.num_kernels)
         free(scratch2)
-        i: cython.Py_ssize_t
-        for i in range(node.num_kernels):
-            node.pi[i] = (node.w[i] - mean) / std  # / node.n[i]
-        softmax(node.pi, node.num_kernels)
+        node.mean_w = mean
+        if std != 0.0:
+            node.std_w = std
+        # i: cython.Py_ssize_t
+        # for i in range(node.num_kernels):
+        #     node.pi[i] = (node.w[i] - mean) / std  # / node.n[i]
+        # softmax(node.pi, node.num_kernels)
         rtn += node.parent_reward
         omp_unset_lock(cython.address(node.access_lock))
         node = node.parent
@@ -546,28 +556,28 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
                                                                              cython.address(node.cov[
                                                                                                 chosen_kernel * env.action_size * env.action_size]),
                                                                              env.action_size, rng)
-        # nan: cython.bint = False
-        # for i in range(env.action_size):
-        #     nan = nan or isnan(action[i])
-        # if nan:
-        #     with cython.gil:
-        #         print("node.mu")
-        #         for j in range(node.num_kernels):
-        #             print(f"{j} [", end=" ")
-        #             for k in range(env.action_size):
-        #                 print(f"{round(node.mu[j * env.action_size + k], 3)}", end=", ")
-        #             print("] ")
-        #         print("node.cov")
-        #         l: cython.Py_ssize_t
-        #         for l in range(node.num_kernels):
-        #             print(f"{l} [", end=" ")
-        #             for k in range(env.action_size):
-        #                 for j in range(env.action_size):
-        #                     print(
-        #                         f"{round(node.cov[l * env.action_size * env.action_size + k * env.action_size + j], 3)}",
-        #                         end=", ")
-        #                 print("")
-        #             print("] ")
+        nan: cython.bint = False
+        for i in range(env.action_size):
+            nan = nan or isnan(action[i])
+        if nan:
+            with cython.gil:
+                print("node.mu")
+                for j in range(node.num_kernels):
+                    print(f"{j} [", end=" ")
+                    for k in range(env.action_size):
+                        print(f"{round(node.mu[j * env.action_size + k], 3)}", end=", ")
+                    print("] ")
+                print("node.cov")
+                l: cython.Py_ssize_t
+                for l in range(node.num_kernels):
+                    print(f"{l} [", end=" ")
+                    for k in range(env.action_size):
+                        for j in range(env.action_size):
+                            print(
+                                f"{round(node.cov[l * env.action_size * env.action_size + k * env.action_size + j], 3)}",
+                                end=", ")
+                        print("")
+                    print("] ")
 
         for i in range(env.action_size):
             if action[i] < -1.0:
@@ -578,13 +588,18 @@ def mkd_mcts_job(j: cython.Py_ssize_t, root: cython.pointer(MKDNode), max_depth:
         r: cython.double = step(env, action)
         rtn: cython.double = r + mkd_rollout(node.current_step + 1, env, rollout_params, rng, False)
         set_mj_state(env, original_state)
+
+        bckup_rtn: cython.double = mkd_rollout(node.current_step, env, rollout_params, rng, True)
+
+        set_mj_state(env, original_state)
         free(original_state)
     else:
-        rtn: cython.double = 0
+        rtn: cython.double = 0.0
+        bckup_rtn: cython.double = 0.0
         action: cython.pointer(cython.double) = cython.NULL
 
     # Backup
-    depth: cython.int = mkd_backup(node, action, rtn, move_indices, cython.address(move_last), env)
+    depth: cython.int = mkd_backup(node, action, rtn, bckup_rtn, move_indices, cython.address(move_last), env)
 
     # Free allocated memory
     free(move_indices)
@@ -1104,8 +1119,8 @@ def driver(env_name, weightT, bias):
 
     i = 0
     num_kernels: cython.int = 20
-    num_visitations: cython.int = 100
-    init_cov: cython.double = 1.0
+    num_visitations: cython.int = 1000
+    init_cov: cython.double = 10.0
     kernel_cov: cython.double = 0.005
     root: cython.pointer(MKDNode) = mkd_create_tree_node(env, i, cython.NULL, 0, False, num_kernels,
                                                          env.action_size, num_visitations, init_cov, kernel_cov)
@@ -1119,7 +1134,7 @@ def driver(env_name, weightT, bias):
     while not is_terminated(env, i):
         print(f"Step: {i}")
         start = time.perf_counter_ns()
-        print("Depth:", mkd_mcts(1000, root, 100, env, params))
+        print("Depth:", mkd_mcts(10000, root, 100, env, params))
         end = time.perf_counter_ns()
         print(f"Time: {(end - start) / 1e6} ms")
         j: cython.Py_ssize_t
@@ -1135,11 +1150,11 @@ def driver(env_name, weightT, bias):
         for j in range(root.num_kernels):
             print(f"{round(root.pi[j], 3)}, ", end="")
         print("")
-        max: cython.double = root.w[0]
+        max: cython.double = root.n[0]
         selected_kernel: cython.Py_ssize_t = 0
         for j in range(root.num_kernels):
-            if max < root.w[j]:
-                max = root.w[j]
+            if max < root.n[j]:
+                max = root.n[j]
                 selected_kernel = j
         print(f"Selected Kernel: {selected_kernel}")
         print("Action: ")
@@ -1156,9 +1171,9 @@ def driver(env_name, weightT, bias):
         free(action)
 
 
-        # # CAUTION: For Reacher only
-        # if (i+1) % 10 == 0 and env_name == "reacher":
-        #     plot_after_action(env, root, params)
+        # CAUTION: For Reacher only
+        if (i+1) % 10 == 0 and env_name == "reacher":
+            plot_after_action(env, root, params)
 
 
         total_reward += step(env, cython.address(root.mu[cython.cast(cython.int, selected_kernel) * env.action_size]))

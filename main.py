@@ -15,7 +15,7 @@ def tanh(a):
 
 def print_hi(name):
     # something.some()
-    model = tf.keras.models.load_model("reacher_network")
+    model = tf.keras.models.load_model("ivp_network")
 
     # state = tf.random.uniform(minval=0, maxval=1.0, shape=(4,27))
     # action = model(state)
@@ -24,8 +24,8 @@ def print_hi(name):
     # new_action = tanh(state @ w + b)
     # print(new_action)
 
-    mcts.driver("reacher", *model.get_weights())
-    # mujoco_envs.driver("reacher", *model.get_weights())
+    mcts.driver("inverted_pendulum", *model.get_weights())
+    # mujoco_envs.driver("inverted_pendulum", *model.get_weights())
 
 if __name__ == '__main__':
     print_hi('PyCharm')

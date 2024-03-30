@@ -390,10 +390,16 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
         std: cython.double = sqrt(cblas_ddot(node.num_kernels, scratch2, 1, scratch2,
                                         1) / node.num_kernels)  # std = sqrt(dot(scratch2, scratch2) / node.num_kernels)
         free(scratch2)
-
+        std += 0.1
         # Merging Means, Cov, and Weights
         k_w_1_: cython.double = (node.w[min_kernel_index] - mean) / std
         k_w_2_: cython.double = (rtn - mean) / std
+        if k_w_1_ > k_w_2_:
+            k_w_1_ -= k_w_1_
+            k_w_2_ -= k_w_1_
+        else:
+            k_w_1_ -= k_w_2_
+            k_w_2_ -= k_w_2_
         k_w_1_ = exp(k_w_1_)
         k_w_2_ = exp(k_w_2_)
         k_w_1: cython.double = k_w_1_ / (k_w_1_ + k_w_2_)
@@ -466,6 +472,7 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
             scratch2[i] = (node.w[i] - mean)
         std: cython.double = sqrt(cblas_ddot(node.num_kernels, scratch2, 1, scratch2,
                                         1) / node.num_kernels)  # std = sqrt(dot(scratch2, scratch2) / node.num_kernels)
+        std += 1
         free(scratch2)
         for i in range(node.num_kernels):
             node.pi[i] = (node.w[i] - mean) / std  # / node.n[i]
@@ -499,8 +506,7 @@ def mkd_backup(node: cython.pointer(MKDNode), action: cython.pointer(cython.doub
                                         1) / node.num_kernels)  # std = sqrt(dot(scratch2, scratch2) / node.num_kernels)
         free(scratch2)
         node.mean_w = mean
-        if std != 0.0:
-            node.std_w = std
+        node.std_w = std + 0.1
         # i: cython.Py_ssize_t
         # for i in range(node.num_kernels):
         #     node.pi[i] = (node.w[i] - mean) / std  # / node.n[i]
@@ -654,27 +660,27 @@ def simple_rollout_job(j: cython.Py_ssize_t, node: cython.pointer(MKDNode), env:
                                                                          cython.address(node.cov[
                                                                                             chosen_kernel * env.action_size * env.action_size]),
                                                                           env.action_size, rng)
-    # nan: cython.bint = False
-    # for i in range(env.action_size):
-    #     nan = nan or isnan(action[i])
-    # if nan:
-    #     with cython.gil:
-    #         print("node.mu")
-    #         for j in range(node.num_kernels):
-    #             print(f"{j} [", end=" ")
-    #             for k in range(env.action_size):
-    #                 print(f"{round(node.mu[j * env.action_size + k], 3)}", end=", ")
-    #             print("] ")
-    #         print("node.cov")
-    #         l: cython.Py_ssize_t
-    #         for l in range(node.num_kernels):
-    #             print(f"{l} [", end=" ")
-    #             for k in range(env.action_size):
-    #                 for j in range(env.action_size):
-    #                     print(f"{round(node.cov[l * env.action_size * env.action_size + k * env.action_size + j], 3)}",
-    #                           end=", ")
-    #                 print("")
-    #             print("] ")
+    nan: cython.bint = False
+    for i in range(env.action_size):
+        nan = nan or isnan(action[i])
+    if nan:
+        with cython.gil:
+            print("node.mu")
+            for j in range(node.num_kernels):
+                print(f"{j} [", end=" ")
+                for k in range(env.action_size):
+                    print(f"{round(node.mu[j * env.action_size + k], 3)}", end=", ")
+                print("] ")
+            print("node.cov")
+            l: cython.Py_ssize_t
+            for l in range(node.num_kernels):
+                print(f"{l} [", end=" ")
+                for k in range(env.action_size):
+                    for j in range(env.action_size):
+                        print(f"{round(node.cov[l * env.action_size * env.action_size + k * env.action_size + j], 3)}",
+                              end=", ")
+                    print("")
+                print("] ")
 
     for i in range(env.action_size):
         if action[i] < -1.0:
@@ -729,10 +735,20 @@ def simple_rollout_job(j: cython.Py_ssize_t, node: cython.pointer(MKDNode), env:
     std: cython.double = sqrt(cblas_ddot(node.num_kernels, scratch2, 1, scratch2,
                                     1) / node.num_kernels)  # std = sqrt(dot(scratch2, scratch2) / node.num_kernels)
     free(scratch2)
-
+    # if std == 0.0:
+    std += 0.01
+    # with cython.gil:
+    #     print(f"STD: {std}")
     # Merging Means, Cov, and Weights
     k_w_1_: cython.double = (node.w[min_kernel_index] - mean) / std
     k_w_2_: cython.double = (rtn - mean) / std
+    if k_w_1_ > k_w_2_:
+        k_w_1_ -= k_w_1_
+        k_w_2_ -= k_w_1_
+    else:
+        k_w_1_ -= k_w_2_
+        k_w_2_ -= k_w_2_
+
     k_w_1_ = exp(k_w_1_)
     k_w_2_ = exp(k_w_2_)
     k_w_1: cython.double = k_w_1_ / (k_w_1_ + k_w_2_)
@@ -805,6 +821,8 @@ def simple_rollout_job(j: cython.Py_ssize_t, node: cython.pointer(MKDNode), env:
         scratch2[i] = (node.w[i] - mean)
     std: cython.double = sqrt(cblas_ddot(node.num_kernels, scratch2, 1, scratch2,
                                     1) / node.num_kernels)  # std = sqrt(dot(scratch2, scratch2) / node.num_kernels)
+    # if std == 0.0:
+    std += 0.01
     free(scratch2)
     for i in range(node.num_kernels):
         node.pi[i] = (node.w[i] - mean) / std  # / node.n[i]
@@ -870,7 +888,7 @@ def normal_pdf(X, mean, cov):
     return np.squeeze(np.exp(-(x_u_t @ cov_inv @ x_u) / 2.0)) / np.sqrt(((2 * np.pi) ** mean.shape[1]) * cov_det)
 
 @cython.cfunc
-@cython.nogil
+# @cython.nogil
 @cython.exceptval(check=False)
 def simple_rollout(num_rollouts: cython.int, node: cython.pointer(MKDNode), rollout_params: PolicyParams, env: MujocoEnv, rng: cython.pointer(gsl_rng)) -> cython.void:
 
@@ -905,7 +923,7 @@ def simple_rollout(num_rollouts: cython.int, node: cython.pointer(MKDNode), roll
     # Perform one rollout per kernel to initialize w and n values
     original_data: cython.pointer(mjData) = env.data
 
-    for i in prange(node.num_kernels):
+    for i in prange(node.num_kernels, nogil=True):
         # Take an action and get next step
         env2: MujocoEnv = env
         env2.data = mj_copyData(cython.NULL, env2.model, original_data)
@@ -921,6 +939,7 @@ def simple_rollout(num_rollouts: cython.int, node: cython.pointer(MKDNode), roll
 
     # Perform rollouts
     for i in prange(num_rollouts, nogil=True):
+        # print(f"Sim: {i}")
         simple_rollout_job(i, node, env, rollout_params)
 
 
@@ -978,7 +997,8 @@ def plot_after_action(env: MujocoEnv, node: cython.pointer(MKDNode), rollout_par
 def driver_simple_rollout(env_name, weightT, bias):
     env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5, "max_steps": 5000},
                 "reacher": {"env_id": 1, "xml_path": "./env_xmls/reacher.xml".encode(), "step_skip": 2,
-                            "max_steps": 100}}
+                            "max_steps": 100},
+                "inverted_pendulum": {"env_id": 2, "xml_path": "./env_xmls/inverted_pendulum.xml".encode(), "step_skip": 2, "max_steps": 2000}}
     env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"],
                                 env_dict[env_name]["step_skip"], env_dict[env_name]["max_steps"])
     print(env.env_id, env.state_size, env.action_size, env.mj_state_size)
@@ -1007,7 +1027,7 @@ def driver_simple_rollout(env_name, weightT, bias):
     num_kernels: cython.int = 20
     init_cov: cython.double = 1.0
     kernel_cov: cython.double = 0.005
-    num_rollouts: cython.int = 100
+    num_rollouts: cython.int = 1000
 
     total_reward: cython.double = 0.0
     state: cython.pointer(cython.double) = get_state(env)
@@ -1083,7 +1103,8 @@ def driver_simple_rollout(env_name, weightT, bias):
 def driver(env_name, weightT, bias):
     env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5, "max_steps": 5000},
                 "reacher": {"env_id": 1, "xml_path": "./env_xmls/reacher.xml".encode(), "step_skip": 2,
-                            "max_steps": 100}}
+                            "max_steps": 100},
+                "inverted_pendulum": {"env_id": 2, "xml_path": "./env_xmls/inverted_pendulum.xml".encode(), "step_skip": 2, "max_steps": 2000}}
     env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"],
                                 env_dict[env_name]["step_skip"], env_dict[env_name]["max_steps"])
     print(env.env_id, env.state_size, env.action_size, env.mj_state_size)

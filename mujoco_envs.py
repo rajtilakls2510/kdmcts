@@ -13,10 +13,12 @@ from cython.cimports.gsl import CblasRowMajor, CblasNoTrans, CblasTrans, \
 from cython.cimports.libc.math import exp, isfinite, isnan, sin, cos, sqrt
 import time
 
+
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
-def create_env(env_id: cython.int, path: cython.pointer(cython.char), num_steps: cython.int, max_steps: cython.int) -> MujocoEnv:
+def create_env(env_id: cython.int, path: cython.pointer(cython.char), num_steps: cython.int,
+               max_steps: cython.int) -> MujocoEnv:
     err: cython.char[300]
     model: cython.pointer(mjModel) = mj_loadXML(path, cython.NULL, err, 300)
     data: cython.pointer(mjData) = mj_makeData(model)
@@ -51,7 +53,8 @@ def get_mj_state_size(env: MujocoEnv) -> cython.int:
 @cython.nogil
 @cython.exceptval(check=False)
 def get_mj_state(env: MujocoEnv) -> cython.pointer(mjtNum):
-    mj_state: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.mj_state_size, cython.sizeof(cython.double)))
+    mj_state: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                          calloc(env.mj_state_size, cython.sizeof(cython.double)))
     mj_getState(env.model, env.data, mj_state, mjSTATE_INTEGRATION)
     return mj_state
 
@@ -61,6 +64,7 @@ def get_mj_state(env: MujocoEnv) -> cython.pointer(mjtNum):
 @cython.exceptval(check=False)
 def set_mj_state(env: MujocoEnv, mj_state: cython.pointer(mjtNum)) -> cython.void:
     mj_setState(env.model, env.data, mj_state, mjSTATE_INTEGRATION)
+
 
 @cython.cfunc
 @cython.nogil
@@ -75,6 +79,7 @@ def get_state_size(env: MujocoEnv) -> cython.int:
     elif env.env_id == 3:
         return get_pusher_state_size(env)
     return 0
+
 
 @cython.cfunc
 @cython.nogil
@@ -129,6 +134,7 @@ def get_action(env: MujocoEnv) -> cython.pointer(cython.double):
     elif env.env_id == 3:
         return get_pusher_action(env)
     return cython.NULL
+
 
 @cython.cfunc
 @cython.nogil
@@ -197,11 +203,13 @@ def is_terminated(env: MujocoEnv, steps_taken: cython.int) -> cython.bint:
         return pusher_is_terminated(env, steps_taken)
     return True
 
+
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
 def policy(params: PolicyParams, state: cython.pointer(cython.double)) -> cython.pointer(cython.double):
-    action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(params.k, cython.sizeof(cython.double)))
+    action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                        calloc(params.k, cython.sizeof(cython.double)))
 
     # action = b
     i: cython.Py_ssize_t
@@ -212,9 +220,10 @@ def policy(params: PolicyParams, state: cython.pointer(cython.double)) -> cython
     cblas_dgemv(CblasRowMajor, CblasNoTrans, params.k, params.n, 1.0, params.w, params.n, state, 1, 1.0, action, 1)
 
     # action = Tanh(action)
-    cblas_dscal(params.k, 2.0, action, 1) # action = 2 * action
-    scratch: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(params.k, cython.sizeof(cython.double)))
-    cblas_dcopy(params.k, action, 1, scratch, 1) # scratch = action
+    cblas_dscal(params.k, 2.0, action, 1)  # action = 2 * action
+    scratch: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                         calloc(params.k, cython.sizeof(cython.double)))
+    cblas_dcopy(params.k, action, 1, scratch, 1)  # scratch = action
     for i in range(params.k):
         action[i] = (exp(action[i]) - 1.0) / (exp(scratch[i]) + 1.0)
     free(scratch)
@@ -270,7 +279,8 @@ def get_ant_state(env: MujocoEnv) -> cython.pointer(cython.double):
 @cython.nogil
 @cython.exceptval(check=False)
 def get_ant_action(env: MujocoEnv) -> cython.pointer(cython.double):
-    action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+    action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                        calloc(env.action_size, cython.sizeof(cython.double)))
 
     i: cython.Py_ssize_t
     for i in range(env.model.nu):
@@ -282,7 +292,6 @@ def get_ant_action(env: MujocoEnv) -> cython.pointer(cython.double):
 @cython.nogil
 @cython.exceptval(check=False)
 def set_ant_action(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.void:
-
     i: cython.Py_ssize_t
     for i in range(env.model.nu):
         env.data.ctrl[i] = action[i]
@@ -298,6 +307,7 @@ def ant_reset_env(env: MujocoEnv, rng: cython.pointer(gsl_rng)) -> cython.void:
     for i in range(env.model.nv):
         env.data.qvel[i] = 0.1 * gsl_ran_gaussian(rng, 1.0)
 
+
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
@@ -310,6 +320,7 @@ def ant_is_healthy(env: MujocoEnv) -> cython.bint:
         healthy = healthy and isfinite(env.data.qvel[i])
     return (0.2 <= env.data.qpos[2] <= 1.0) and healthy
 
+
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
@@ -321,10 +332,11 @@ def ant_is_terminated(env: MujocoEnv, steps_taken: cython.int) -> cython.bint:
 @cython.nogil
 @cython.exceptval(check=False)
 def ant_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.double:
-    body_n: cython.int = 1 # TORSO
+    body_n: cython.int = 1  # TORSO
     previous_x: cython.double = env.data.xpos[body_n * 3 + 0]
     i: cython.Py_ssize_t
-    action_aux: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+    action_aux: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                            calloc(env.action_size, cython.sizeof(cython.double)))
     for i in range(env.action_size):
         if action[i] < -1.0:
             action_aux[i] = -1.0
@@ -336,13 +348,14 @@ def ant_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.do
     set_action(env, action_aux)
 
     mj_step2(env.model, env.data)
-    perform_steps(env, env.num_steps-1)
+    perform_steps(env, env.num_steps - 1)
 
     new_x: cython.double = env.data.xpos[body_n * 3 + 0]
     xvel: cython.double = (new_x - previous_x) / (env.model.opt.timestep * env.num_steps)
 
     ctrl_cost_weight: cython.double = 0.5
-    ctrl_cost: cython.double = ctrl_cost_weight * cblas_ddot(env.action_size, action_aux, 1, action_aux, 1) # np.sum(action ** 2)
+    ctrl_cost: cython.double = ctrl_cost_weight * cblas_ddot(env.action_size, action_aux, 1, action_aux,
+                                                             1)  # np.sum(action ** 2)
 
     healthy_reward: cython.double = 1.0
     healthy_reward = healthy_reward * ant_is_healthy(env)
@@ -391,7 +404,8 @@ def get_reacher_state(env: MujocoEnv) -> cython.pointer(cython.double):
     for i in range(env.model.nv - 2):
         state[i + env.model.nq - 2 + 4] = env.data.qvel[i]
     for i in range(2):
-        state[i + env.model.nv - 2 + env.model.nq - 2 + 4] = env.data.xpos[3 * 3 + i] - env.data.xpos[4 * 3 + i]    # fingertip - target
+        state[i + env.model.nv - 2 + env.model.nq - 2 + 4] = env.data.xpos[3 * 3 + i] - env.data.xpos[
+            4 * 3 + i]  # fingertip - target
     return state
 
 
@@ -412,7 +426,8 @@ def get_reacher_state(env: MujocoEnv) -> cython.pointer(cython.double):
 @cython.nogil
 @cython.exceptval(check=False)
 def get_reacher_action(env: MujocoEnv) -> cython.pointer(cython.double):
-    action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+    action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                        calloc(env.action_size, cython.sizeof(cython.double)))
     i: cython.Py_ssize_t
     for i in range(env.model.nu):
         action[i] = env.data.ctrl[i]
@@ -459,9 +474,9 @@ def reacher_is_terminated(env: MujocoEnv, steps_taken: cython.int) -> cython.bin
 @cython.nogil
 @cython.exceptval(check=False)
 def reacher_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.double:
-
     i: cython.Py_ssize_t
-    action_aux: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+    action_aux: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                            calloc(env.action_size, cython.sizeof(cython.double)))
     for i in range(env.action_size):
         if action[i] < -1.0:
             action_aux[i] = -1.0
@@ -473,10 +488,10 @@ def reacher_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cytho
     set_action(env, action_aux)
 
     mj_step2(env.model, env.data)
-    perform_steps(env, env.num_steps-1)
+    perform_steps(env, env.num_steps - 1)
     vec_sum: cython.double = 0.0
     for i in range(3):
-        vec_sum += (env.data.xpos[3 * 3 + i] - env.data.xpos[4 * 3 + i])**2 # fingertip - target
+        vec_sum += (env.data.xpos[3 * 3 + i] - env.data.xpos[4 * 3 + i]) ** 2  # fingertip - target
 
     reward_dist_weight: cython.double = 1.0
     reward: cython.double = -sqrt(vec_sum) * reward_dist_weight
@@ -484,7 +499,7 @@ def reacher_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cytho
     reward_control_weight: cython.double = 1.0
     reward_ctrl: cython.double = 0.0
     for i in range(env.action_size):
-        reward_ctrl += action_aux[i]**2
+        reward_ctrl += action_aux[i] ** 2
     reward -= reward_ctrl * reward_control_weight
 
     free(action_aux)
@@ -530,7 +545,8 @@ def get_inverted_pendulum_state(env: MujocoEnv) -> cython.pointer(cython.double)
 @cython.nogil
 @cython.exceptval(check=False)
 def get_inverted_pendulum_action(env: MujocoEnv) -> cython.pointer(cython.double):
-    action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+    action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                        calloc(env.action_size, cython.sizeof(cython.double)))
 
     i: cython.Py_ssize_t
     for i in range(env.model.nu):
@@ -542,7 +558,6 @@ def get_inverted_pendulum_action(env: MujocoEnv) -> cython.pointer(cython.double
 @cython.nogil
 @cython.exceptval(check=False)
 def set_inverted_pendulum_action(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.void:
-
     i: cython.Py_ssize_t
     for i in range(env.model.nu):
         env.data.ctrl[i] = action[i]
@@ -571,6 +586,7 @@ def inverted_pendulum_is_healthy(env: MujocoEnv) -> cython.bint:
         healthy = healthy and isfinite(env.data.qvel[i])
     return (-0.2 <= env.data.qpos[1] <= 0.2) and healthy
 
+
 @cython.cfunc
 @cython.nogil
 @cython.exceptval(check=False)
@@ -582,9 +598,9 @@ def inverted_pendulum_is_terminated(env: MujocoEnv, steps_taken: cython.int) -> 
 @cython.nogil
 @cython.exceptval(check=False)
 def inverted_pendulum_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.double:
-
     i: cython.Py_ssize_t
-    action_aux: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+    action_aux: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                            calloc(env.action_size, cython.sizeof(cython.double)))
     for i in range(env.action_size):
         if action[i] < -1.0:
             action_aux[i] = -3.0
@@ -596,7 +612,7 @@ def inverted_pendulum_step(env: MujocoEnv, action: cython.pointer(cython.double)
     set_action(env, action_aux)
 
     mj_step2(env.model, env.data)
-    perform_steps(env, env.num_steps-1)
+    perform_steps(env, env.num_steps - 1)
 
     terminated: cython.bint = inverted_pendulum_is_terminated(env, 0)
 
@@ -635,8 +651,8 @@ def get_pusher_state(env: MujocoEnv) -> cython.pointer(cython.double):
         state[i] = env.data.qpos[i]
     for i in range(7):
         state[i + 7] = env.data.qvel[i]
-    for i in range(3*3):
-        state[i + 14] = env.data.xpos[10 * 3 + i] # 10: tips_arm    11: object  12: goal
+    for i in range(3 * 3):
+        state[i + 14] = env.data.xpos[10 * 3 + i]  # 10: tips_arm    11: object  12: goal
     return state
 
 
@@ -644,7 +660,8 @@ def get_pusher_state(env: MujocoEnv) -> cython.pointer(cython.double):
 @cython.nogil
 @cython.exceptval(check=False)
 def get_pusher_action(env: MujocoEnv) -> cython.pointer(cython.double):
-    action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+    action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                        calloc(env.action_size, cython.sizeof(cython.double)))
 
     i: cython.Py_ssize_t
     for i in range(env.model.nu):
@@ -656,7 +673,6 @@ def get_pusher_action(env: MujocoEnv) -> cython.pointer(cython.double):
 @cython.nogil
 @cython.exceptval(check=False)
 def set_pusher_action(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.void:
-
     i: cython.Py_ssize_t
     for i in range(env.model.nu):
         env.data.ctrl[i] = action[i]
@@ -695,9 +711,9 @@ def pusher_is_terminated(env: MujocoEnv, steps_taken: cython.int) -> cython.bint
 @cython.nogil
 @cython.exceptval(check=False)
 def pusher_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython.double:
-
     i: cython.Py_ssize_t
-    action_aux: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
+    action_aux: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                            calloc(env.action_size, cython.sizeof(cython.double)))
     for i in range(env.action_size):
         if action[i] < -1.0:
             action_aux[i] = -2.0
@@ -709,15 +725,15 @@ def pusher_step(env: MujocoEnv, action: cython.pointer(cython.double)) -> cython
     set_action(env, action_aux)
 
     mj_step2(env.model, env.data)
-    perform_steps(env, env.num_steps-1)
+    perform_steps(env, env.num_steps - 1)
 
     vec_1: cython.pointer(mjtNum) = cython.cast(cython.pointer(cython.double), calloc(3, cython.sizeof(mjtNum)))
     vec_2: cython.pointer(mjtNum) = cython.cast(cython.pointer(cython.double), calloc(3, cython.sizeof(mjtNum)))
 
-    memcpy(vec_1, cython.address(env.data.xpos[11 * 3]), 3 * cython.sizeof(mjtNum)) # vec_1 = env.data.xpos["object"]
-    cblas_daxpy(3, -1.0, cython.address(env.data.xpos[10 * 3]), 1, vec_1, 1)    # vec_1 -= env.data.xpos["tips_arms"]
-    memcpy(vec_2, cython.address(env.data.xpos[11 * 3]), 3 * cython.sizeof(mjtNum)) # vec_2 = env.data.xpos["object"]
-    cblas_daxpy(3, -1.0, cython.address(env.data.xpos[12 * 3]), 1, vec_2, 1)    # vec_2 -= env.data.xpos["goal"]
+    memcpy(vec_1, cython.address(env.data.xpos[11 * 3]), 3 * cython.sizeof(mjtNum))  # vec_1 = env.data.xpos["object"]
+    cblas_daxpy(3, -1.0, cython.address(env.data.xpos[10 * 3]), 1, vec_1, 1)  # vec_1 -= env.data.xpos["tips_arms"]
+    memcpy(vec_2, cython.address(env.data.xpos[11 * 3]), 3 * cython.sizeof(mjtNum))  # vec_2 = env.data.xpos["object"]
+    cblas_daxpy(3, -1.0, cython.address(env.data.xpos[12 * 3]), 1, vec_2, 1)  # vec_2 -= env.data.xpos["goal"]
 
     # for i in range(3):
     #     vec_1[i] = env.data.xpos[11 * 3 + i] - env.data.xpos[10 * 3 + i]
@@ -750,7 +766,8 @@ class MujocoPyEnv:
 
     def __init__(self, env_name: str, seed: int = 5):
         self.env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5}}
-        self.env_struct = create_env(self.env_dict[env_name]["env_id"], self.env_dict[env_name]["xml_path"], self.env_dict[env_name]["step_skip"], self.env_dict[env_name]["max_steps"])
+        self.env_struct = create_env(self.env_dict[env_name]["env_id"], self.env_dict[env_name]["xml_path"],
+                                     self.env_dict[env_name]["step_skip"], self.env_dict[env_name]["max_steps"])
         T: cython.pointer(gsl_rng_type) = gsl_rng_default
         self.rng = gsl_rng_alloc(T)
         gsl_rng_set(self.rng, seed)
@@ -766,20 +783,26 @@ class MujocoPyEnv:
 
 def driver(env_name, weightT, bias):
     env_dict = {"ant": {"env_id": 0, "xml_path": "./env_xmls/ant.xml".encode(), "step_skip": 5, "max_steps": 5000},
-                "reacher": {"env_id": 1, "xml_path": "./env_xmls/reacher.xml".encode(), "step_skip": 2, "max_steps": 100},
-                "inverted_pendulum": {"env_id": 2, "xml_path": "./env_xmls/inverted_pendulum.xml".encode(), "step_skip": 2, "max_steps": 2000},
+                "reacher": {"env_id": 1, "xml_path": "./env_xmls/reacher.xml".encode(), "step_skip": 2,
+                            "max_steps": 100},
+                "inverted_pendulum": {"env_id": 2, "xml_path": "./env_xmls/inverted_pendulum.xml".encode(),
+                                      "step_skip": 2, "max_steps": 2000},
                 "pusher": {"env_id": 3, "xml_path": "./env_xmls/pusher.xml".encode(), "step_skip": 5, "max_steps": 500}}
-    env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"], env_dict[env_name]["step_skip"], env_dict[env_name]["max_steps"])
+    env: MujocoEnv = create_env(env_dict[env_name]["env_id"], env_dict[env_name]["xml_path"],
+                                env_dict[env_name]["step_skip"], env_dict[env_name]["max_steps"])
     print(weightT.shape, env.env_id, env.state_size, env.action_size, env.mj_state_size)
 
-    w: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(weightT.shape[0] * weightT.shape[1], cython.sizeof(cython.double)))
-    b: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(weightT.shape[1], cython.sizeof(cython.double)))
+    w: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                   calloc(weightT.shape[0] * weightT.shape[1],
+                                                          cython.sizeof(cython.double)))
+    b: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double),
+                                                   calloc(weightT.shape[1], cython.sizeof(cython.double)))
 
     i: cython.Py_ssize_t
     j: cython.Py_ssize_t
     for i in range(env.action_size):
         for j in range(weightT.shape[0]):
-            w[i*weightT.shape[0]+j] = weightT[j][i]
+            w[i * weightT.shape[0] + j] = weightT[j][i]
     for j in range(env.action_size):
         b[j] = bias[j]
     # print("W:")
@@ -815,7 +838,7 @@ def driver(env_name, weightT, bias):
         # action: cython.pointer(cython.double) = cython.cast(cython.pointer(cython.double), calloc(env.action_size, cython.sizeof(cython.double)))
         print("Action: ")
         for i in range(env.action_size):
-            print(round(action[i],3), end=", ")
+            print(round(action[i], 3), end=", ")
         print("")
         reward: cython.double = step(env, action)
         terminated: cython.bint = is_terminated(env, j)

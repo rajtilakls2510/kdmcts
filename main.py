@@ -9,9 +9,11 @@ try:
 except:
     pass
 
+
 def tanh(a):
-    a = tf.exp(2*a)
-    return (a-1) / (a+1)
+    a = tf.exp(2 * a)
+    return (a - 1) / (a + 1)
+
 
 def print_hi(name):
     # something.some()
@@ -27,6 +29,6 @@ def print_hi(name):
     mcts.driver("pusher", *model.get_weights())
     # mujoco_envs.driver("pusher", *model.get_weights())
 
+
 if __name__ == '__main__':
     print_hi('PyCharm')
-

@@ -31,3 +31,16 @@ cdef struct MKDNode:
     bint expanded
     MKDNode** children   # (num_kernels, )
 
+
+cdef struct VGNode:
+    mjtNum* mj_state
+    int current_step
+    VGNode* parent
+    double parent_reward
+    omp_lock_t access_lock
+    bint terminal
+    int action_dim
+    int num_children
+    VGNode* children    # List: (num_children, )
+    VGNode* next
+

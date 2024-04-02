@@ -31,16 +31,40 @@ cdef struct MKDNode:
     bint expanded
     MKDNode** children   # (num_kernels, )
 
+cdef struct MKDRolloutReturn:
+    double rtn
+    double backup_rtn
+    double* action
+
 
 cdef struct VGNode:
     mjtNum* mj_state
     int current_step
     VGNode* parent
     double parent_reward
+    double* parent_action
+    double* init_parent_action
+    double parent_q_value
     omp_lock_t access_lock
     bint terminal
+    double child_add_alpha
+    int num_visitations
     int action_dim
     int num_children
     VGNode* children    # List: (num_children, )
     VGNode* next
 
+cdef struct VGSAReturn:
+    VGNode* next_node
+    bint rollout
+
+cdef struct VGSimReturn:
+    int depth
+    double rtn
+    double** actions
+    int last_action
+
+cdef struct VGRolloutReturn:
+    double** actions
+    int last_action
+    double rtn

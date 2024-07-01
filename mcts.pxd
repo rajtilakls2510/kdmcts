@@ -28,6 +28,7 @@ cdef struct MKDNode:
     int max_iterations
     double init_cov
     double kernel_cov
+    double kernel_cov_decay
     bint expanded
     MKDNode** children   # (num_kernels, )
 
